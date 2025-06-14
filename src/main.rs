@@ -1,6 +1,5 @@
-use std::error::Error;
+use std::io;
 use std::vec::Vec;
-use std::{error, i64, io};
 
 #[derive(Debug)]
 enum Word<'a> {
@@ -9,22 +8,18 @@ enum Word<'a> {
     String(&'a str),
 }
 
-fn is_space(char: u8) -> bool {
-    char == ' ' as u8 || char == '\n' as u8 || char == '\t' as u8 || char == '\r' as u8
-}
-
-fn is_digit(char: u8) -> bool {
-    '0' as u8 <= char && char <= '9' as u8
+fn get_byte(s: &str, index: usize) -> Option<u8> {
+    s.as_bytes().get(index).copied()
 }
 
 fn parse_token(token: &str) -> Option<Word> {
-    if token.bytes().all(is_space) {
+    if token.bytes().all(|c| c.is_ascii_whitespace()) {
         Option::None
-    } else if token.bytes().all(is_digit) {
+    } else if token.bytes().all(|c| c.is_ascii_digit()) {
         let mut value = 0i64;
         for digit in token.bytes() {
             value *= 10;
-            value += (digit - '0' as u8) as i64
+            value += (digit - b'0') as i64
         }
         Option::Some(Word::Int(value))
     } else {
@@ -38,13 +33,13 @@ fn lex(code: &str) -> Vec<Word> {
     let mut token_start = 0;
     let mut quoted = false;
     for i in 0..=code.len() {
-        if code.bytes().nth(i).is_some_and(|c| c == '"' as u8) {
+        if get_byte(code, i).is_some_and(|c| c == b'"') {
             if quoted {
                 result.push(Word::String(&code[token_start..i]));
             }
             token_start = i + 1;
             quoted = !quoted;
-        } else if !quoted && code.bytes().nth(i).is_none_or(is_space) {
+        } else if !quoted && get_byte(code, i).is_none_or(|c| c.is_ascii_whitespace()) {
             if let Option::Some(token) = parse_token(&code[token_start..i]) {
                 result.push(token);
             }
@@ -61,7 +56,7 @@ enum Value {
 }
 
 impl Value {
-    fn expect_int(self: Self) -> Result<i64, String> {
+    fn expect_int(self) -> Result<i64, String> {
         if let Value::Int(value) = self {
             Result::Ok(value)
         } else {
