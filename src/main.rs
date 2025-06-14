@@ -1,3 +1,5 @@
+use core::net;
+use std::fmt::{format, Display};
 use std::io;
 use std::vec::Vec;
 
@@ -49,76 +51,49 @@ fn lex(code: &str) -> Vec<Word> {
     result
 }
 
-#[derive(Debug)]
-enum Value {
-    Int(i64),
-    String(String),
+struct Variables {
+    last_var: i64,
+    stack: Vec<i64>,
 }
 
-impl Value {
-    fn expect_int(self) -> Result<i64, String> {
-        if let Value::Int(value) = self {
-            Result::Ok(value)
-        } else {
-            Result::Err(format!("{self:?} not an integer"))
+impl Variables {
+    fn new() -> Self {
+        Self {
+            last_var: 0,
+            stack: Vec::new(),
         }
+    }
+
+    fn new_var(&mut self) -> i64 {
+        self.last_var += 1;
+        self.stack.push(self.last_var);
+        self.last_var
     }
 }
 
-fn pop_int(stack: &mut Vec<Value>) -> Result<i64, String> {
-    stack.pop().ok_or("Stack underflow")?.expect_int()
-}
-
-fn run(word: Word, stack: &mut Vec<Value>) -> Result<(), String> {
+fn compile(word: Word, vars: &mut Variables) -> Result<String, String> {
     match word {
         Word::Int(value) => {
-            stack.push(Value::Int(value));
+            let var = vars.new_var();
+            Result::Ok(format!("%{var} = {value}"))
         }
         Word::String(value) => {
-            stack.push(Value::String(value.into()));
+            let var: i64 = vars.new_var();
+            Result::Ok(format!("%{var} = \"{value}\""))
         }
-        Word::Id("+") => {
-            let b = pop_int(stack)?;
-            let a = pop_int(stack)?;
-            stack.push(Value::Int(a + b));
-        }
-        Word::Id("-") => {
-            let b = pop_int(stack)?;
-            let a = pop_int(stack)?;
-            stack.push(Value::Int(a - b));
-        }
-        Word::Id("*") => {
-            let b = pop_int(stack)?;
-            let a = pop_int(stack)?;
-            stack.push(Value::Int(a * b));
-        }
-        Word::Id("/") => {
-            let b = pop_int(stack)?;
-            let a = pop_int(stack)?;
-            stack.push(Value::Int(a / b));
-        }
-        Word::Id("%") => {
-            let b = pop_int(stack)?;
-            let a = pop_int(stack)?;
-            stack.push(Value::Int(a % b));
-        }
-        Word::Id(id) => {
-            return Result::Err(format!("Unknown word {id}"));
-        }
+        Word::Id(id) => Err(format!("Unknown word {}", id)),
     }
-    Ok(())
 }
 
 fn main() {
     let stdin = io::stdin();
-    let mut stack = Vec::<Value>::new();
+    let mut vars = Variables::new();
     for line in stdin.lines() {
         let line = line.unwrap();
         for word in lex(&line) {
-            if let Err(message) = run(word, &mut stack) {
-                println!("{message}");
-            } else {
-                println!("{stack:?}");
+            match compile(word, &mut vars) {
+                Ok(output) => println!("{output}"),
+                Err(message) => println!("{message}"),
             }
         }
     }
