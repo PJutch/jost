@@ -64,14 +64,18 @@ impl Variables {
         }
     }
 
-    fn new_var(&mut self) -> i64 {
-        self.last_var += 1;
-        self.stack.push(self.last_var);
-        self.last_var
+    fn push_var(&mut self, var: i64) {
+        self.stack.push(var);
     }
 
     fn pop_var(&mut self) -> Option<i64> {
         self.stack.pop()
+    }
+
+    fn new_var(&mut self) -> i64 {
+        self.last_var += 1;
+        self.stack.push(self.last_var);
+        self.last_var
     }
 }
 
@@ -97,6 +101,23 @@ fn compile(word: Word, vars: &mut Variables) -> Result<String, String> {
         Word::Id("*") => compile_bin_op("*", vars),
         Word::Id("/") => compile_bin_op("/", vars),
         Word::Id("%") => compile_bin_op("%", vars),
+        Word::Id("dup") => {
+            let var: i64 = vars.pop_var().ok_or("Stack underflow")?;
+            vars.push_var(var);
+            vars.push_var(var);
+            Result::Ok("".to_owned())
+        }
+        Word::Id("pop") => {
+            vars.pop_var().ok_or("Stack underflow")?;
+            Result::Ok("".to_owned())
+        }
+        Word::Id("swp") => {
+            let a = vars.pop_var().ok_or("Stack underflow")?;
+            let b = vars.pop_var().ok_or("Stack underflow")?;
+            vars.push_var(b);
+            vars.push_var(a);
+            Result::Ok("".to_owned())
+        }
         Word::Id(id) => Err(format!("Unknown word {}", id)),
     }
 }
@@ -108,6 +129,7 @@ fn main() {
         let line = line.unwrap();
         for word in lex(&line) {
             match compile(word, &mut vars) {
+                Ok(output) if output.is_empty() => {}
                 Ok(output) => println!("{output}"),
                 Err(message) => println!("{message}"),
             }
