@@ -69,6 +69,17 @@ impl Variables {
         self.stack.push(self.last_var);
         self.last_var
     }
+
+    fn pop_var(&mut self) -> Option<i64> {
+        self.stack.pop()
+    }
+}
+
+fn compile_bin_op(binop: &str, vars: &mut Variables) -> Result<String, String> {
+    let a = vars.pop_var().ok_or("Stack underflow")?;
+    let b = vars.pop_var().ok_or("Stack underflow")?;
+    let result = vars.new_var();
+    Result::Ok(format!("%{result} = %{a} {binop} %{b}"))
 }
 
 fn compile(word: Word, vars: &mut Variables) -> Result<String, String> {
@@ -81,6 +92,11 @@ fn compile(word: Word, vars: &mut Variables) -> Result<String, String> {
             let var: i64 = vars.new_var();
             Result::Ok(format!("%{var} = \"{value}\""))
         }
+        Word::Id("+") => compile_bin_op("+", vars),
+        Word::Id("-") => compile_bin_op("-", vars),
+        Word::Id("*") => compile_bin_op("*", vars),
+        Word::Id("/") => compile_bin_op("/", vars),
+        Word::Id("%") => compile_bin_op("%", vars),
         Word::Id(id) => Err(format!("Unknown word {}", id)),
     }
 }
