@@ -1,6 +1,11 @@
-use core::net;
+use core::{net, str};
+use std::env;
+use std::error::Error;
 use std::fmt::{format, Display};
-use std::io;
+use std::fs::{write, File, OpenOptions};
+use std::io::{self, Read, Stderr, Write};
+use std::os::windows::io::FromRawHandle;
+use std::process::{Command, Output, Stdio};
 use std::vec::Vec;
 
 #[derive(Debug)]
@@ -86,7 +91,7 @@ fn compile_bin_op(binop: &str, vars: &mut Variables) -> Result<String, String> {
     Result::Ok(format!("%{result} = %{a} {binop} %{b}"))
 }
 
-fn compile(word: Word, vars: &mut Variables) -> Result<String, String> {
+fn compile_word(word: Word, vars: &mut Variables) -> Result<String, String> {
     match word {
         Word::Int(value) => {
             let var = vars.new_var();
@@ -122,17 +127,106 @@ fn compile(word: Word, vars: &mut Variables) -> Result<String, String> {
     }
 }
 
-fn main() {
-    let stdin = io::stdin();
+fn compile_to_ir(code: &str) -> Result<String, String> {
+    let mut ir = String::new();
     let mut vars = Variables::new();
-    for line in stdin.lines() {
-        let line = line.unwrap();
-        for word in lex(&line) {
-            match compile(word, &mut vars) {
-                Ok(output) if output.is_empty() => {}
-                Ok(output) => println!("{output}"),
-                Err(message) => println!("{message}"),
+    for word in lex(code) {
+        ir += compile_word(word, &mut vars)?.as_str();
+        ir += "\n";
+    }
+    Result::Ok(ir)
+}
+
+fn run_stage(program: &str, input_file: &str, output_file: &str) -> Result<(), Box<dyn Error>> {
+    if Command::new(program)
+        .arg("-o")
+        .arg(output_file)
+        .arg(input_file)
+        .status()?
+        .success()
+    {
+        Result::Ok(())
+    } else {
+        Result::Err(Box::from(format!("{program} failed")))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Flag {
+    None,
+    OutputFile,
+}
+
+fn change_extension(path: &str, old_extension: &str, new_extension: &str) -> String {
+    path.trim_end_matches(old_extension).to_owned() + new_extension
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut input_file = Option::<String>::None;
+    let mut output_file = Option::<String>::None;
+
+    let mut current_flag = Flag::None;
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "-o" => {
+                current_flag = Flag::OutputFile;
             }
+            flag if flag.starts_with('-') => {
+                return Result::Err(Box::from(format!("flag {} is unknown", flag)))
+            }
+            arg => match current_flag {
+                Flag::None => {
+                    if input_file.is_none() {
+                        input_file = Option::Some(arg.to_owned());
+                    } else {
+                        return Result::Err(Box::from("multiple input files provided"));
+                    }
+                }
+                Flag::OutputFile => {
+                    current_flag = Flag::None;
+                    if output_file.is_none() {
+                        output_file = Option::Some(arg.to_owned());
+                    } else {
+                        return Result::Err(Box::from("multiple input files provided"));
+                    }
+                }
+            },
         }
     }
+
+    if current_flag == Flag::OutputFile {
+        return Result::Err(Box::from("-o expects an output file as an argument"));
+    }
+
+    let extension = ".jost";
+    let input_file = input_file.ok_or("no input files provided")?;
+    let ir_file = change_extension(input_file.as_str(), extension, ".ll");
+    let bc_file = change_extension(input_file.as_str(), extension, ".bc");
+    let asm_file = change_extension(input_file.as_str(), extension, ".s");
+    let output_file = change_extension(input_file.as_str(), extension, ".exe");
+
+    println!(
+        "{} => {} => {} => {} => {}",
+        input_file, ir_file, bc_file, asm_file, output_file
+    );
+
+    let mut code = String::new();
+    OpenOptions::new()
+        .read(true)
+        .open(input_file)?
+        .read_to_string(&mut code)?;
+
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&ir_file)?
+        .write_all(compile_to_ir(code.as_str())?.as_bytes())
+        .expect("write to {bc_file} should succeed");
+
+    run_stage("llvm-as", ir_file.as_str(), &bc_file)?;
+    run_stage("llc", &bc_file, &asm_file)?;
+    run_stage("clang", &asm_file, output_file.as_str())?;
+
+    Result::Ok(())
 }
