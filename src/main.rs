@@ -1,6 +1,7 @@
 use core::str;
 use std::env;
 use std::error::Error;
+use std::fmt::Display;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::process::Command;
@@ -54,12 +55,27 @@ fn lex(code: &str) -> Vec<Word> {
     result
 }
 
-struct Variables {
-    last_var: i64,
-    stack: Vec<i64>,
+#[derive(Clone, Copy)]
+enum Value {
+    IntLiteral(i64),
+    Variable(i64),
 }
 
-impl Variables {
+impl Value {
+    fn to_expression(self) -> String {
+        match self {
+            Self::IntLiteral(value) => value.to_string(),
+            Self::Variable(index) => format!("%{index}"),
+        }
+    }
+}
+
+struct Locals {
+    last_var: i64,
+    stack: Vec<Value>,
+}
+
+impl Locals {
     fn new() -> Self {
         Self {
             last_var: 0,
@@ -67,58 +83,83 @@ impl Variables {
         }
     }
 
-    fn push_var(&mut self, var: i64) {
-        self.stack.push(var);
+    fn push(&mut self, value: Value) {
+        self.stack.push(value);
     }
 
-    fn pop_var(&mut self) -> Option<i64> {
+    fn pop(&mut self) -> Option<Value> {
         self.stack.pop()
     }
 
     fn new_var(&mut self) -> i64 {
         self.last_var += 1;
-        self.stack.push(self.last_var);
         self.last_var
     }
 }
 
-fn compile_bin_op(binop: &str, vars: &mut Variables) -> Result<String, String> {
-    let a = vars.pop_var().ok_or("Stack underflow")?;
-    let b = vars.pop_var().ok_or("Stack underflow")?;
-    let result = vars.new_var();
-    Result::Ok(format!("%{result} = %{a} {binop} %{b}"))
+impl Display for Locals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("last var: {}, stack: ", self.last_var))?;
+        for value in &self.stack {
+            f.write_str(&value.to_expression())?;
+            f.write_str(" ")?;
+        }
+        Result::Ok(())
+    }
 }
 
-fn compile_word(word: Word, vars: &mut Variables) -> Result<String, String> {
+fn compile_instruction(
+    opcode: &str,
+    operand_count: i64,
+    locals: &mut Locals,
+) -> Result<String, String> {
+    let result = locals.new_var();
+    let mut instruction = format!("    %{result} = {opcode}");
+
+    for i in 0..operand_count {
+        let operand = locals.pop().ok_or("Stack underflow")?;
+
+        if i > 0 {
+            instruction += ",";
+        }
+        instruction += " ";
+        instruction += &operand.to_expression();
+    }
+
+    locals.push(Value::Variable(result));
+
+    Result::Ok(instruction)
+}
+
+fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
     match word {
         Word::Int(value) => {
-            let var = vars.new_var();
-            Result::Ok(format!("%{var} = {value}"))
+            locals.push(Value::IntLiteral(value));
+            Result::Ok("".to_owned())
         }
-        Word::String(value) => {
-            let var: i64 = vars.new_var();
-            Result::Ok(format!("%{var} = \"{value}\""))
+        Word::String(_) => {
+            todo!("string literals not implemented")
         }
-        Word::Id("+") => compile_bin_op("+", vars),
-        Word::Id("-") => compile_bin_op("-", vars),
-        Word::Id("*") => compile_bin_op("*", vars),
-        Word::Id("/") => compile_bin_op("/", vars),
-        Word::Id("%") => compile_bin_op("%", vars),
+        Word::Id("+") => compile_instruction("add i64", 2, locals),
+        Word::Id("-") => compile_instruction("sub i64", 2, locals),
+        Word::Id("*") => compile_instruction("mul i64", 2, locals),
+        Word::Id("/") => compile_instruction("div i64", 2, locals),
+        Word::Id("%") => compile_instruction("mod i64", 2, locals),
         Word::Id("dup") => {
-            let var: i64 = vars.pop_var().ok_or("Stack underflow")?;
-            vars.push_var(var);
-            vars.push_var(var);
+            let value = locals.pop().ok_or("Stack underflow")?;
+            locals.push(value);
+            locals.push(value);
             Result::Ok("".to_owned())
         }
         Word::Id("pop") => {
-            vars.pop_var().ok_or("Stack underflow")?;
+            locals.pop().ok_or("Stack underflow")?;
             Result::Ok("".to_owned())
         }
         Word::Id("swp") => {
-            let a = vars.pop_var().ok_or("Stack underflow")?;
-            let b = vars.pop_var().ok_or("Stack underflow")?;
-            vars.push_var(b);
-            vars.push_var(a);
+            let a = locals.pop().ok_or("Stack underflow")?;
+            let b = locals.pop().ok_or("Stack underflow")?;
+            locals.push(b);
+            locals.push(a);
             Result::Ok("".to_owned())
         }
         Word::Id(id) => Err(format!("Unknown word {}", id)),
@@ -127,11 +168,14 @@ fn compile_word(word: Word, vars: &mut Variables) -> Result<String, String> {
 
 fn compile_to_ir(code: &str) -> Result<String, String> {
     let mut ir = String::new();
-    let mut vars = Variables::new();
+    let mut locals = Locals::new();
+
+    ir += "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n";
     for word in lex(code) {
-        ir += compile_word(word, &mut vars)?.as_str();
-        ir += "\n";
+        ir += compile_word(word, &mut locals)?.as_str();
     }
+    ir += "\n";
+    ir += "    ret i32 0\n}";
     Result::Ok(ir)
 }
 

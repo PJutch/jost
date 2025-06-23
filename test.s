@@ -13,20 +13,7 @@
 	.globl	main                            # -- Begin function main
 	.p2align	4, 0x90
 main:                                   # @main
-.seh_proc main
 # %bb.0:
-	subq	$40, %rsp
-	.seh_stackalloc 40
-	.seh_endprologue
-	leaq	hello_world(%rip), %rcx
-	callq	puts
 	xorl	%eax, %eax
-	addq	$40, %rsp
 	retq
-	.seh_endproc
                                         # -- End function
-	.section	.rdata,"dr"
-	.globl	hello_world                     # @hello_world
-hello_world:
-	.asciz	"Hello, world!"
-
