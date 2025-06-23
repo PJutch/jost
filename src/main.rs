@@ -1,11 +1,9 @@
-use core::{net, str};
+use core::str;
 use std::env;
 use std::error::Error;
-use std::fmt::{format, Display};
-use std::fs::{write, File, OpenOptions};
-use std::io::{self, Read, Stderr, Write};
-use std::os::windows::io::FromRawHandle;
-use std::process::{Command, Output, Stdio};
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
+use std::process::Command;
 use std::vec::Vec;
 
 #[derive(Debug)]
@@ -204,11 +202,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bc_file = change_extension(input_file.as_str(), extension, ".bc");
     let asm_file = change_extension(input_file.as_str(), extension, ".s");
     let output_file = change_extension(input_file.as_str(), extension, ".exe");
-
-    println!(
-        "{} => {} => {} => {} => {}",
-        input_file, ir_file, bc_file, asm_file, output_file
-    );
 
     let mut code = String::new();
     OpenOptions::new()
