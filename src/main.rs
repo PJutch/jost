@@ -55,17 +55,19 @@ fn lex(code: &str) -> Vec<Word> {
     result
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Value {
     IntLiteral(i64),
     Variable(i64),
+    Global(String),
 }
 
 impl Value {
-    fn to_expression(self) -> String {
+    fn to_expression(&self) -> String {
         match self {
             Self::IntLiteral(value) => value.to_string(),
             Self::Variable(index) => format!("%{index}"),
+            Self::Global(name) => format!("ptr @{name}"),
         }
     }
 }
@@ -73,6 +75,7 @@ impl Value {
 struct Locals {
     last_var: i64,
     stack: Vec<Value>,
+    strings: Vec<String>,
 }
 
 impl Locals {
@@ -80,6 +83,7 @@ impl Locals {
         Self {
             last_var: 0,
             stack: Vec::new(),
+            strings: Vec::new(),
         }
     }
 
@@ -99,10 +103,17 @@ impl Locals {
 
 impl Display for Locals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("last var: {}, stack: ", self.last_var))?;
+        f.write_fmt(format_args!("last var: {}, stack:", self.last_var))?;
         for value in &self.stack {
-            f.write_str(&value.to_expression())?;
             f.write_str(" ")?;
+            f.write_str(&value.to_expression())?;
+        }
+
+        f.write_str(", strings:")?;
+        for string in &self.strings {
+            f.write_str(" \"")?;
+            f.write_str(string)?;
+            f.write_str("\"")?;
         }
         Result::Ok(())
     }
@@ -137,8 +148,10 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
             locals.push(Value::IntLiteral(value));
             Result::Ok("".to_owned())
         }
-        Word::String(_) => {
-            todo!("string literals not implemented")
+        Word::String(value) => {
+            locals.strings.push(value.to_owned());
+            locals.push(Value::Global(format!("__string{}", locals.strings.len())));
+            Result::Ok("".to_owned())
         }
         Word::Id("+") => compile_instruction("add i64", 2, locals),
         Word::Id("-") => compile_instruction("sub i64", 2, locals),
@@ -147,7 +160,7 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
         Word::Id("%") => compile_instruction("mod i64", 2, locals),
         Word::Id("dup") => {
             let value = locals.pop().ok_or("Stack underflow")?;
-            locals.push(value);
+            locals.push(value.clone());
             locals.push(value);
             Result::Ok("".to_owned())
         }
@@ -162,6 +175,10 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
             locals.push(a);
             Result::Ok("".to_owned())
         }
+        Word::Id("print") => {
+            let value = locals.pop().ok_or("Stack underflow")?;
+            Result::Ok(format!("call i32 @puts({})", value.to_expression()))
+        }
         Word::Id(id) => Err(format!("Unknown word {}", id)),
     }
 }
@@ -172,10 +189,25 @@ fn compile_to_ir(code: &str) -> Result<String, String> {
 
     ir += "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n";
     for word in lex(code) {
-        ir += compile_word(word, &mut locals)?.as_str();
+        let word_ir = compile_word(word, &mut locals)?;
+        if !word_ir.is_empty() {
+            ir += &word_ir;
+            ir += "\n";
+        }
     }
-    ir += "\n";
     ir += "    ret i32 0\n}";
+
+    ir += "\n";
+    for (i, string) in locals.strings.iter().enumerate() {
+        ir += &format!(
+            "\n@__string{} = constant [{} x i8] c\"{string}\\00\"",
+            i + 1,
+            string.len() + 1
+        );
+    }
+
+    ir += "\n\ndeclare i32 @puts(ptr)\n";
+
     Result::Ok(ir)
 }
 
