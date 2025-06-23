@@ -2,6 +2,7 @@ use core::str;
 use std::env;
 use std::error::Error;
 use std::fmt::Display;
+use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::process::Command;
@@ -238,12 +239,26 @@ fn change_extension(path: &str, old_extension: &str, new_extension: &str) -> Str
 fn main() -> Result<(), Box<dyn Error>> {
     let mut input_file = Option::<String>::None;
     let mut output_file = Option::<String>::None;
+    let mut print = false;
+    let mut run = false;
 
     let mut current_flag = Flag::None;
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "-o" => {
                 current_flag = Flag::OutputFile;
+            }
+            "--print" => {
+                if print {
+                    return Result::Err(Box::from("--print specified twice"));
+                }
+                print = true;
+            }
+            "--run" => {
+                if run {
+                    return Result::Err(Box::from("--run specified twice"));
+                }
+                run = true;
             }
             flag if flag.starts_with('-') => {
                 return Result::Err(Box::from(format!("flag {} is unknown", flag)))
@@ -285,17 +300,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         .open(input_file)?
         .read_to_string(&mut code)?;
 
+    let ir = compile_to_ir(code.as_str())?;
+
     OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&ir_file)?
-        .write_all(compile_to_ir(code.as_str())?.as_bytes())
-        .expect("write to {bc_file} should succeed");
+        .write_all(ir.as_bytes())?;
+
+    if print {
+        println!("{ir}");
+    }
 
     run_stage("llvm-as", ir_file.as_str(), &bc_file)?;
     run_stage("llc", &bc_file, &asm_file)?;
     run_stage("clang", &asm_file, output_file.as_str())?;
+
+    if run {
+        let abs_output_path = fs::canonicalize(&output_file)?;
+        Command::new(&abs_output_path).status()?;
+    }
 
     Result::Ok(())
 }
