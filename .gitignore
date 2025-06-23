@@ -1,1 +1,5 @@
 /target
+*.ll
+*.bc
+*.s
+*.exe
