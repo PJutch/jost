@@ -130,6 +130,11 @@ impl Locals {
         self.var_types.insert(self.last_var, type_);
         self.last_var
     }
+
+    fn rewind(&mut self) {
+        self.last_var = 0;
+        self.stack.clear();
+    }
 }
 
 impl Display for Locals {
@@ -152,69 +157,104 @@ fn type_of(value: &Value, locals: &Locals, globals: &Globals) -> Type {
     }
 }
 
-fn compile_arithmetic(
-    opcode: &str,
-    operand_count: i64,
-    locals: &mut Locals,
-    globals: &Globals,
-) -> Result<String, String> {
-    let result = locals.new_var(Type::Int);
-    let mut instruction = format!("    %{result} = {opcode}");
-
-    for i in 0..operand_count {
-        let operand = locals.pop().ok_or("Stack underflow")?;
-        if type_of(&operand, locals, globals) != Type::Int {
-            return Result::Err("Arithmetic instruction expects integers".to_string());
-        }
-
-        if i > 0 {
-            instruction += ",";
-        }
-        instruction += " ";
-        instruction += &operand.to_expression();
-    }
-
-    locals.push(Value::Variable(result));
-
-    Result::Ok(instruction)
+#[derive(Clone, Copy)]
+enum Arithemtic {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
 }
 
-fn compile_word(word: Word, locals: &mut Locals, globals: &mut Globals) -> Result<String, String> {
+impl Arithemtic {
+    fn from_id(id: &str) -> Option<Arithemtic> {
+        match id {
+            "+" => Option::Some(Arithemtic::Add),
+            "-" => Option::Some(Arithemtic::Sub),
+            "*" => Option::Some(Arithemtic::Mul),
+            "/" => Option::Some(Arithemtic::Div),
+            "%" => Option::Some(Arithemtic::Mod),
+            _ => Option::None,
+        }
+    }
+
+    fn knows_id(id: &str) -> bool {
+        Arithemtic::from_id(id).is_some()
+    }
+
+    fn to_llvm(self) -> &'static str {
+        match self {
+            Arithemtic::Add => "add i64",
+            Arithemtic::Sub => "sub i64",
+            Arithemtic::Mul => "mul i64",
+            Arithemtic::Div => "div i64",
+            Arithemtic::Mod => "mod i64",
+        }
+    }
+}
+
+enum Instruction {
+    Arithemtic(Arithemtic, Value, Value, i64),
+    Print(Value),
+}
+
+fn compile_word(
+    word: &Word,
+    locals: &mut Locals,
+    globals: &mut Globals,
+) -> Result<Option<Instruction>, String> {
     match word {
         Word::Int(value) => {
-            locals.push(Value::IntLiteral(value));
-            Result::Ok("".to_owned())
+            locals.push(Value::IntLiteral(*value));
+            Result::Ok(Option::None)
         }
         Word::String(value) => {
             locals.push(Value::Global(globals.new_string(value)));
-            Result::Ok("".to_owned())
+            Result::Ok(Option::None)
         }
-        Word::Id("+") => compile_arithmetic("add i64", 2, locals, globals),
-        Word::Id("-") => compile_arithmetic("sub i64", 2, locals, globals),
-        Word::Id("*") => compile_arithmetic("mul i64", 2, locals, globals),
-        Word::Id("/") => compile_arithmetic("div i64", 2, locals, globals),
-        Word::Id("%") => compile_arithmetic("mod i64", 2, locals, globals),
+        Word::Id(id) if Arithemtic::knows_id(id) => {
+            let result_var = locals.new_var(Type::Int);
+            locals.push(Value::Variable(result_var));
+
+            let a = locals.pop().ok_or("Stack underflow")?;
+            let b = locals.pop().ok_or("Stack underflow")?;
+
+            if type_of(&a, locals, globals) != Type::Int
+                && type_of(&b, locals, globals) == Type::Int
+            {
+                Result::Ok(Option::Some(Instruction::Arithemtic(
+                    Arithemtic::from_id(id).expect(
+                        "arithmetic from_id should succeed because it's checked in pattern guard",
+                    ),
+                    a,
+                    b,
+                    result_var,
+                )))
+            } else {
+                Result::Err("arithmetic expects ints".to_owned())
+            }
+        }
         Word::Id("dup") => {
             let value = locals.pop().ok_or("Stack underflow")?;
             locals.push(value.clone());
             locals.push(value);
-            Result::Ok("".to_owned())
+            Result::Ok(Option::None)
         }
         Word::Id("pop") => {
             locals.pop().ok_or("Stack underflow")?;
-            Result::Ok("".to_owned())
+            Result::Ok(Option::None)
         }
         Word::Id("swp") => {
             let a = locals.pop().ok_or("Stack underflow")?;
             let b = locals.pop().ok_or("Stack underflow")?;
             locals.push(b);
             locals.push(a);
-            Result::Ok("".to_owned())
+            Result::Ok(Option::None)
         }
         Word::Id("print") => {
             let value = locals.pop().ok_or("Stack underflow")?;
             if type_of(&value, locals, globals) == Type::String {
-                Result::Ok(format!("call i32 @puts({})", value.to_expression()))
+                Result::Ok(Option::Some(Instruction::Print(value)))
             } else {
                 Result::Err("print only supports strings".to_owned())
             }
@@ -223,33 +263,72 @@ fn compile_word(word: Word, locals: &mut Locals, globals: &mut Globals) -> Resul
     }
 }
 
-fn compile_to_ir(code: &str) -> Result<String, String> {
-    let mut ir = String::new();
-    let mut globals = Globals::new();
-    let mut locals = Locals::new();
+fn compile_to_ir(
+    words: &[Word],
+    locals: &mut Locals,
+    globals: &mut Globals,
+) -> Result<Vec<Instruction>, String> {
+    let mut ir = Vec::new();
 
-    ir += "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n";
-    for word in lex(code) {
-        let word_ir = compile_word(word, &mut locals, &mut globals)?;
-        if !word_ir.is_empty() {
-            ir += &word_ir;
-            ir += "\n";
+    locals.rewind();
+    for word in words {
+        if let Some(instruction) = compile_word(word, locals, globals)? {
+            ir.push(instruction);
         }
     }
-    ir += "    ret i32 0\n}";
+    Result::Ok(ir)
+}
 
-    ir += "\n";
+fn generate_instruction_llvm(instruction: &Instruction) -> Result<String, String> {
+    match instruction {
+        Instruction::Arithemtic(op, a, b, result_var) => Result::Ok(format!(
+            "    %{result_var} = %{} {}, {}",
+            op.to_llvm(),
+            a.to_expression(),
+            b.to_expression()
+        )),
+        Instruction::Print(value) => {
+            Result::Ok(format!("call i32 @puts({})", value.to_expression()))
+        }
+    }
+}
+
+fn generate_llvm(
+    ir: &[Instruction],
+    locals: &mut Locals,
+    globals: &mut Globals,
+) -> Result<String, String> {
+    locals.rewind();
+    let mut llvm = String::new();
+
+    llvm += "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n";
+    for instruction in ir {
+        let word_ir = generate_instruction_llvm(instruction)?;
+        llvm += &word_ir;
+        llvm += "\n";
+    }
+    llvm += "    ret i32 0\n}";
+
+    llvm += "\n";
     for (i, string) in globals.strings.iter().enumerate() {
-        ir += &format!(
+        llvm += &format!(
             "\n@__string{} = constant [{} x i8] c\"{string}\\00\"",
             i + 1,
             string.len() + 1
         );
     }
 
-    ir += "\n\ndeclare i32 @puts(ptr)\n";
+    llvm += "\n\ndeclare i32 @puts(ptr)\n";
 
-    Result::Ok(ir)
+    Result::Ok(llvm)
+}
+
+fn compile(code: &str) -> Result<String, String> {
+    let words = lex(code);
+    let mut locals = Locals::new();
+    let mut globals = Globals::new();
+    let ir = compile_to_ir(words.as_slice(), &mut locals, &mut globals)?;
+    generate_llvm(ir.as_slice(), &mut locals, &mut globals)
 }
 
 fn run_stage(program: &str, input_file: &str, output_file: &str) -> Result<(), Box<dyn Error>> {
@@ -340,17 +419,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         .open(input_file)?
         .read_to_string(&mut code)?;
 
-    let ir = compile_to_ir(code.as_str())?;
+    let llvm = compile(code.as_str())?;
 
     OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&ir_file)?
-        .write_all(ir.as_bytes())?;
+        .write_all(llvm.as_bytes())?;
 
     if print {
-        println!("{ir}");
+        println!("{llvm}");
     }
 
     run_stage("llvm-as", ir_file.as_str(), &bc_file)?;
