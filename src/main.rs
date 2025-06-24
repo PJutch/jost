@@ -57,7 +57,7 @@ fn lex(code: &str) -> Vec<Word> {
     result
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum Type {
     Int,
     String,
@@ -80,12 +80,32 @@ impl Value {
     }
 }
 
+struct Globals {
+    global_types: HashMap<String, Type>,
+    strings: Vec<String>,
+}
+
+impl Globals {
+    fn new() -> Self {
+        Self {
+            global_types: HashMap::new(),
+            strings: Vec::new(),
+        }
+    }
+
+    fn new_string(&mut self, s: &str) -> String {
+        self.strings.push(s.to_owned());
+
+        let global_name = format!("__string{}", self.strings.len());
+        self.global_types.insert(global_name.clone(), Type::String);
+        global_name
+    }
+}
+
 struct Locals {
     last_var: i64,
     var_types: HashMap<i64, Type>,
-    global_types: HashMap<String, Type>,
     stack: Vec<Value>,
-    strings: Vec<String>,
 }
 
 impl Locals {
@@ -93,9 +113,7 @@ impl Locals {
         Self {
             last_var: 0,
             var_types: HashMap::new(),
-            global_types: HashMap::new(),
             stack: Vec::new(),
-            strings: Vec::new(),
         }
     }
 
@@ -112,22 +130,6 @@ impl Locals {
         self.var_types.insert(self.last_var, type_);
         self.last_var
     }
-
-    fn type_of(&self, value: &Value) -> &Type {
-        match value {
-            Value::IntLiteral(_) => &Type::Int,
-            Value::Variable(index) => &self.var_types[index],
-            Value::Global(name) => &self.global_types[name],
-        }
-    }
-
-    fn new_string(&mut self, s: &str) {
-        self.strings.push(s.to_owned());
-
-        let global_name = format!("__string{}", self.strings.len());
-        self.global_types.insert(global_name.clone(), Type::String);
-        self.push(Value::Global(global_name));
-    }
 }
 
 impl Display for Locals {
@@ -138,13 +140,15 @@ impl Display for Locals {
             f.write_str(&value.to_expression())?;
         }
 
-        f.write_str(", strings:")?;
-        for string in &self.strings {
-            f.write_str(" \"")?;
-            f.write_str(string)?;
-            f.write_str("\"")?;
-        }
         Result::Ok(())
+    }
+}
+
+fn type_of(value: &Value, locals: &Locals, globals: &Globals) -> Type {
+    match value {
+        Value::IntLiteral(_) => Type::Int,
+        Value::Variable(index) => locals.var_types[index],
+        Value::Global(name) => globals.global_types[name],
     }
 }
 
@@ -152,13 +156,14 @@ fn compile_arithmetic(
     opcode: &str,
     operand_count: i64,
     locals: &mut Locals,
+    globals: &Globals,
 ) -> Result<String, String> {
     let result = locals.new_var(Type::Int);
     let mut instruction = format!("    %{result} = {opcode}");
 
     for i in 0..operand_count {
         let operand = locals.pop().ok_or("Stack underflow")?;
-        if *locals.type_of(&operand) != Type::Int {
+        if type_of(&operand, locals, globals) != Type::Int {
             return Result::Err("Arithmetic instruction expects integers".to_string());
         }
 
@@ -174,21 +179,21 @@ fn compile_arithmetic(
     Result::Ok(instruction)
 }
 
-fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
+fn compile_word(word: Word, locals: &mut Locals, globals: &mut Globals) -> Result<String, String> {
     match word {
         Word::Int(value) => {
             locals.push(Value::IntLiteral(value));
             Result::Ok("".to_owned())
         }
         Word::String(value) => {
-            locals.new_string(value);
+            locals.push(Value::Global(globals.new_string(value)));
             Result::Ok("".to_owned())
         }
-        Word::Id("+") => compile_arithmetic("add i64", 2, locals),
-        Word::Id("-") => compile_arithmetic("sub i64", 2, locals),
-        Word::Id("*") => compile_arithmetic("mul i64", 2, locals),
-        Word::Id("/") => compile_arithmetic("div i64", 2, locals),
-        Word::Id("%") => compile_arithmetic("mod i64", 2, locals),
+        Word::Id("+") => compile_arithmetic("add i64", 2, locals, globals),
+        Word::Id("-") => compile_arithmetic("sub i64", 2, locals, globals),
+        Word::Id("*") => compile_arithmetic("mul i64", 2, locals, globals),
+        Word::Id("/") => compile_arithmetic("div i64", 2, locals, globals),
+        Word::Id("%") => compile_arithmetic("mod i64", 2, locals, globals),
         Word::Id("dup") => {
             let value = locals.pop().ok_or("Stack underflow")?;
             locals.push(value.clone());
@@ -208,7 +213,7 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
         }
         Word::Id("print") => {
             let value = locals.pop().ok_or("Stack underflow")?;
-            if *locals.type_of(&value) == Type::String {
+            if type_of(&value, locals, globals) == Type::String {
                 Result::Ok(format!("call i32 @puts({})", value.to_expression()))
             } else {
                 Result::Err("print only supports strings".to_owned())
@@ -220,11 +225,12 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
 
 fn compile_to_ir(code: &str) -> Result<String, String> {
     let mut ir = String::new();
+    let mut globals = Globals::new();
     let mut locals = Locals::new();
 
     ir += "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n";
     for word in lex(code) {
-        let word_ir = compile_word(word, &mut locals)?;
+        let word_ir = compile_word(word, &mut locals, &mut globals)?;
         if !word_ir.is_empty() {
             ir += &word_ir;
             ir += "\n";
@@ -233,7 +239,7 @@ fn compile_to_ir(code: &str) -> Result<String, String> {
     ir += "    ret i32 0\n}";
 
     ir += "\n";
-    for (i, string) in locals.strings.iter().enumerate() {
+    for (i, string) in globals.strings.iter().enumerate() {
         ir += &format!(
             "\n@__string{} = constant [{} x i8] c\"{string}\\00\"",
             i + 1,
