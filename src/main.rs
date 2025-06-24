@@ -1,4 +1,5 @@
 use core::str;
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::fmt::Display;
@@ -56,6 +57,12 @@ fn lex(code: &str) -> Vec<Word> {
     result
 }
 
+#[derive(PartialEq, Eq)]
+enum Type {
+    Int,
+    String,
+}
+
 #[derive(Clone)]
 enum Value {
     IntLiteral(i64),
@@ -75,6 +82,8 @@ impl Value {
 
 struct Locals {
     last_var: i64,
+    var_types: HashMap<i64, Type>,
+    global_types: HashMap<String, Type>,
     stack: Vec<Value>,
     strings: Vec<String>,
 }
@@ -83,6 +92,8 @@ impl Locals {
     fn new() -> Self {
         Self {
             last_var: 0,
+            var_types: HashMap::new(),
+            global_types: HashMap::new(),
             stack: Vec::new(),
             strings: Vec::new(),
         }
@@ -96,9 +107,26 @@ impl Locals {
         self.stack.pop()
     }
 
-    fn new_var(&mut self) -> i64 {
+    fn new_var(&mut self, type_: Type) -> i64 {
         self.last_var += 1;
+        self.var_types.insert(self.last_var, type_);
         self.last_var
+    }
+
+    fn type_of(&self, value: &Value) -> &Type {
+        match value {
+            Value::IntLiteral(_) => &Type::Int,
+            Value::Variable(index) => &self.var_types[index],
+            Value::Global(name) => &self.global_types[name],
+        }
+    }
+
+    fn new_string(&mut self, s: &str) {
+        self.strings.push(s.to_owned());
+
+        let global_name = format!("__string{}", self.strings.len());
+        self.global_types.insert(global_name.clone(), Type::String);
+        self.push(Value::Global(global_name));
     }
 }
 
@@ -120,16 +148,19 @@ impl Display for Locals {
     }
 }
 
-fn compile_instruction(
+fn compile_arithmetic(
     opcode: &str,
     operand_count: i64,
     locals: &mut Locals,
 ) -> Result<String, String> {
-    let result = locals.new_var();
+    let result = locals.new_var(Type::Int);
     let mut instruction = format!("    %{result} = {opcode}");
 
     for i in 0..operand_count {
         let operand = locals.pop().ok_or("Stack underflow")?;
+        if *locals.type_of(&operand) != Type::Int {
+            return Result::Err("Arithmetic instruction expects integers".to_string());
+        }
 
         if i > 0 {
             instruction += ",";
@@ -150,15 +181,14 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
             Result::Ok("".to_owned())
         }
         Word::String(value) => {
-            locals.strings.push(value.to_owned());
-            locals.push(Value::Global(format!("__string{}", locals.strings.len())));
+            locals.new_string(value);
             Result::Ok("".to_owned())
         }
-        Word::Id("+") => compile_instruction("add i64", 2, locals),
-        Word::Id("-") => compile_instruction("sub i64", 2, locals),
-        Word::Id("*") => compile_instruction("mul i64", 2, locals),
-        Word::Id("/") => compile_instruction("div i64", 2, locals),
-        Word::Id("%") => compile_instruction("mod i64", 2, locals),
+        Word::Id("+") => compile_arithmetic("add i64", 2, locals),
+        Word::Id("-") => compile_arithmetic("sub i64", 2, locals),
+        Word::Id("*") => compile_arithmetic("mul i64", 2, locals),
+        Word::Id("/") => compile_arithmetic("div i64", 2, locals),
+        Word::Id("%") => compile_arithmetic("mod i64", 2, locals),
         Word::Id("dup") => {
             let value = locals.pop().ok_or("Stack underflow")?;
             locals.push(value.clone());
@@ -178,7 +208,11 @@ fn compile_word(word: Word, locals: &mut Locals) -> Result<String, String> {
         }
         Word::Id("print") => {
             let value = locals.pop().ok_or("Stack underflow")?;
-            Result::Ok(format!("call i32 @puts({})", value.to_expression()))
+            if *locals.type_of(&value) == Type::String {
+                Result::Ok(format!("call i32 @puts({})", value.to_expression()))
+            } else {
+                Result::Err("print only supports strings".to_owned())
+            }
         }
         Word::Id(id) => Err(format!("Unknown word {}", id)),
     }
