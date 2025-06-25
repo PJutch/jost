@@ -5,6 +5,7 @@ use std::collections::HashMap;
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Type {
     Int,
+    Bool,
     String,
     FnPtr,
 }
@@ -12,6 +13,7 @@ enum Type {
 #[derive(Clone, Debug)]
 pub enum Value {
     IntLiteral(i64),
+    BoolLiteral(bool),
     Variable(i64),
     Global(String),
 }
@@ -98,6 +100,7 @@ pub fn print_ir(locals: &Locals, globals: &Globals) {
 fn type_of(value: &Value, locals: &Locals, globals: &Globals) -> Type {
     match value {
         Value::IntLiteral(_) => Type::Int,
+        Value::BoolLiteral(_) => Type::Bool,
         Value::Variable(index) => locals.var_types[index],
         Value::Global(name) => globals.global_types[name],
     }
@@ -113,35 +116,76 @@ pub enum Arithemtic {
 }
 
 impl Arithemtic {
-    fn from_id(id: &str) -> Option<Arithemtic> {
+    fn from_id(id: &str) -> Option<Self> {
         match id {
-            "+" => Option::Some(Arithemtic::Add),
-            "-" => Option::Some(Arithemtic::Sub),
-            "*" => Option::Some(Arithemtic::Mul),
-            "/" => Option::Some(Arithemtic::Div),
-            "%" => Option::Some(Arithemtic::Mod),
+            "+" => Option::Some(Self::Add),
+            "-" => Option::Some(Self::Sub),
+            "*" => Option::Some(Self::Mul),
+            "/" => Option::Some(Self::Div),
+            "%" => Option::Some(Self::Mod),
             _ => Option::None,
         }
     }
 
     fn knows_id(id: &str) -> bool {
-        Arithemtic::from_id(id).is_some()
+        Self::from_id(id).is_some()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Relational {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Relational {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "==" => Option::Some(Self::Eq),
+            "!=" => Option::Some(Self::Ne),
+            "<" => Option::Some(Self::Lt),
+            "<=" => Option::Some(Self::Le),
+            ">" => Option::Some(Self::Gt),
+            ">=" => Option::Some(Self::Ge),
+            _ => Option::None,
+        }
     }
 
-    pub fn to_llvm(self) -> &'static str {
-        match self {
-            Arithemtic::Add => "add i64",
-            Arithemtic::Sub => "sub i64",
-            Arithemtic::Mul => "mul i64",
-            Arithemtic::Div => "div i64",
-            Arithemtic::Mod => "mod i64",
+    fn knows_id(id: &str) -> bool {
+        Self::from_id(id).is_some()
+    }
+}
+
+#[derive(Debug)]
+pub enum Logical {
+    And,
+    Or,
+}
+
+impl Logical {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "&&" => Option::Some(Self::And),
+            "||" => Option::Some(Self::Or),
+            _ => Option::None,
         }
+    }
+
+    fn knows_id(id: &str) -> bool {
+        Self::from_id(id).is_some()
     }
 }
 
 #[derive(Debug)]
 pub enum Instruction {
     Arithemtic(Arithemtic, Value, Value, i64),
+    Relational(Relational, Value, Value, i64),
+    Logical(Logical, Value, Value, i64),
+    Not(Value, i64),
     Print(Value),
     Call(Value),
 }
@@ -178,6 +222,69 @@ fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, 
                 } else {
                     return Result::Err("arithmetic expects ints".to_owned());
                 }
+            }
+            Word::Id(id) if Relational::knows_id(id) => {
+                let result_var = locals.new_var(Type::Bool);
+
+                let a = locals.pop().ok_or("Stack underflow")?;
+                let b = locals.pop().ok_or("Stack underflow")?;
+
+                if type_of(&a, &locals, globals) == Type::Int
+                    && type_of(&b, &locals, globals) == Type::Int
+                {
+                    locals.ir.push(Instruction::Relational(
+                        Relational::from_id(id).expect(
+                            "relational from_id should succeed because it's checked in pattern guard",
+                        ),
+                        a,
+                        b,
+                        result_var,
+                    ));
+
+                    locals.push(Value::Variable(result_var));
+                } else {
+                    return Result::Err("relational expects ints".to_owned());
+                }
+            }
+            Word::Id(id) if Logical::knows_id(id) => {
+                let result_var = locals.new_var(Type::Bool);
+
+                let a = locals.pop().ok_or("Stack underflow")?;
+                let b = locals.pop().ok_or("Stack underflow")?;
+
+                if type_of(&a, &locals, globals) == Type::Bool
+                    && type_of(&b, &locals, globals) == Type::Bool
+                {
+                    locals.ir.push(Instruction::Logical(
+                        Logical::from_id(id).expect(
+                            "logical from_id should succeed because it's checked in pattern guard",
+                        ),
+                        a,
+                        b,
+                        result_var,
+                    ));
+
+                    locals.push(Value::Variable(result_var));
+                } else {
+                    return Result::Err("logical expects bools".to_owned());
+                }
+            }
+            Word::Id("!") => {
+                let result_var = locals.new_var(Type::Bool);
+                let value = locals.pop().ok_or("Stack underflow")?;
+
+                if type_of(&value, &locals, globals) == Type::Bool {
+                    locals.ir.push(Instruction::Not(value, result_var));
+                    locals.push(Value::Variable(result_var));
+                } else {
+                    return Result::Err("not expects bool".to_owned());
+                }
+            }
+            Word::Id("true") => {
+                locals.push(Value::BoolLiteral(true));
+            }
+            Word::Id("false") => {
+                locals.push(Value::BoolLiteral(false));
             }
             Word::Id("dup") => {
                 let value = locals.pop().ok_or("Stack underflow")?;

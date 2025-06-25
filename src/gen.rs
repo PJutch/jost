@@ -1,6 +1,9 @@
+use crate::compile::Arithemtic;
 use crate::compile::Globals;
 use crate::compile::Instruction;
 use crate::compile::Locals;
+use crate::compile::Logical;
+use crate::compile::Relational;
 use crate::compile::Value;
 
 use std::collections::HashMap;
@@ -27,6 +30,7 @@ impl GenerationContext {
     fn to_expression(&self, value: &Value) -> String {
         match value {
             Value::IntLiteral(value) => value.to_string(),
+            Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
             Value::Variable(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("ptr @{name}"),
         }
@@ -35,9 +39,31 @@ impl GenerationContext {
     fn to_callable(&self, value: &Value) -> String {
         match value {
             Value::IntLiteral(_) => panic!("trying to call int literal"),
+            Value::BoolLiteral(_) => panic!("trying to call bool literal"),
             Value::Variable(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("@{name}"),
         }
+    }
+}
+
+pub fn llvm_arithmetic(op: Arithemtic) -> &'static str {
+    match op {
+        Arithemtic::Add => "add",
+        Arithemtic::Sub => "sub",
+        Arithemtic::Mul => "mul",
+        Arithemtic::Div => "div",
+        Arithemtic::Mod => "mod",
+    }
+}
+
+pub fn llvm_relational(op: Relational) -> &'static str {
+    match op {
+        Relational::Eq => "eq",
+        Relational::Ne => "ne",
+        Relational::Lt => "lt",
+        Relational::Le => "le",
+        Relational::Gt => "gt",
+        Relational::Ge => "ge",
     }
 }
 
@@ -49,10 +75,41 @@ fn generate_instruction_llvm(
         Instruction::Arithemtic(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             Result::Ok(format!(
-                "    %{result_var_number} = {} {}, {}",
-                op.to_llvm(),
+                "    %{result_var_number} = {} i64 {}, {}",
+                llvm_arithmetic(*op),
                 context.to_expression(a),
                 context.to_expression(b),
+            ))
+        }
+        Instruction::Relational(op, a, b, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            Result::Ok(format!(
+                "    %{result_var_number} = icmp {} i64 {}, {}",
+                llvm_relational(*op),
+                context.to_expression(a),
+                context.to_expression(b),
+            ))
+        }
+        Instruction::Logical(op, a, b, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            match op {
+                Logical::And => Result::Ok(format!(
+                    "    %{result_var_number} = select i1 {}, i1 {}, i1 false",
+                    context.to_expression(a),
+                    context.to_expression(b)
+                )),
+                Logical::Or => Result::Ok(format!(
+                    "    %{result_var_number} = select i1 {}, i1 true, i1 {}",
+                    context.to_expression(a),
+                    context.to_expression(b)
+                )),
+            }
+        }
+        Instruction::Not(value, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            Result::Ok(format!(
+                "    %{result_var_number} = icmp eq {}, 0",
+                context.to_expression(value)
             ))
         }
         Instruction::Print(value) => {
