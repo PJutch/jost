@@ -2,7 +2,6 @@ use core::str;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
-use std::fmt::Display;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -35,35 +34,83 @@ fn parse_token(token: &str) -> Option<Word> {
     }
 }
 
-fn lex(code: &str) -> Vec<Word> {
-    let mut result = Vec::<Word>::new();
+struct Lexer<'a> {
+    code: &'a str,
+    current_byte: usize,
+}
 
-    let mut token_start = 0;
-    let mut quoted = false;
-    for i in 0..=code.len() {
-        if get_byte(code, i).is_some_and(|c| c == b'"') {
-            if quoted {
-                result.push(Word::String(&code[token_start..i]));
-            }
-            token_start = i + 1;
-            quoted = !quoted;
-        } else if !quoted && get_byte(code, i).is_none_or(|c| c.is_ascii_whitespace()) {
-            if let Option::Some(token) = parse_token(&code[token_start..i]) {
-                result.push(token);
-            }
-            token_start = i + 1;
+impl<'a> Lexer<'a> {
+    fn new(code: &'a str) -> Self {
+        Self {
+            code,
+            current_byte: 0,
         }
     }
-    result
+
+    fn next_word(&mut self) -> Option<Word<'a>> {
+        let mut token_start = self.current_byte;
+        let mut quoted = false;
+        while self.current_byte <= self.code.len() {
+            let current_byte = self.current_byte;
+            self.current_byte += 1;
+
+            if get_byte(self.code, current_byte).is_some_and(|c| c == b'"') {
+                if quoted {
+                    return Option::Some(Word::String(&self.code[token_start..current_byte]));
+                }
+                token_start = self.current_byte;
+                quoted = true;
+            } else if !quoted
+                && get_byte(self.code, current_byte)
+                    .is_none_or(|c| c == b')' && token_start + 1 < current_byte)
+            {
+                if let Option::Some(token) = parse_token(&self.code[token_start..current_byte]) {
+                    self.current_byte -= 1;
+                    return Option::Some(token);
+                }
+                token_start = current_byte;
+            } else if !quoted && get_byte(self.code, current_byte).is_none_or(|c| c == b'(') {
+                if let Option::Some(token) = parse_token(&self.code[token_start..=current_byte]) {
+                    return Option::Some(token);
+                }
+                token_start = self.current_byte;
+            } else if !quoted
+                && get_byte(self.code, current_byte).is_none_or(|c| c.is_ascii_whitespace())
+            {
+                if let Option::Some(token) = parse_token(&self.code[token_start..current_byte]) {
+                    return Option::Some(token);
+                }
+                token_start = self.current_byte;
+            }
+        }
+        Option::None
+    }
+
+    fn is_empty(&self) -> bool {
+        for i in self.current_byte..self.code.len() {
+            if get_byte(self.code, i).is_some_and(|c| !c.is_ascii_whitespace()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn debug_print(code: &'a str) {
+        let mut lexer = Self::new(code);
+        while let Some(word) = lexer.next_word() {
+            println!("{word:?}");
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Type {
     Int,
     String,
+    FnPtr,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Value {
     IntLiteral(i64),
     Variable(i64),
@@ -71,11 +118,19 @@ enum Value {
 }
 
 impl Value {
-    fn to_expression(&self) -> String {
+    fn to_expression(&self, var_numbers: &HashMap<i64, i64>) -> String {
         match self {
             Self::IntLiteral(value) => value.to_string(),
-            Self::Variable(index) => format!("%{index}"),
+            Self::Variable(index) => format!("%{}", var_numbers[index]),
             Self::Global(name) => format!("ptr @{name}"),
+        }
+    }
+
+    fn to_callable(&self, var_numbers: &HashMap<i64, i64>) -> String {
+        match self {
+            Self::IntLiteral(_) => panic!("trying to call int literal"),
+            Self::Variable(index) => format!("%{}", var_numbers[index]),
+            Self::Global(name) => format!("@{name}"),
         }
     }
 }
@@ -83,6 +138,7 @@ impl Value {
 struct Globals {
     global_types: HashMap<String, Type>,
     strings: Vec<String>,
+    lambdas: Vec<Locals>,
 }
 
 impl Globals {
@@ -90,6 +146,7 @@ impl Globals {
         Self {
             global_types: HashMap::new(),
             strings: Vec::new(),
+            lambdas: Vec::new(),
         }
     }
 
@@ -100,12 +157,21 @@ impl Globals {
         self.global_types.insert(global_name.clone(), Type::String);
         global_name
     }
+
+    fn new_lambda(&mut self, locals: Locals) -> String {
+        self.lambdas.push(locals);
+
+        let global_name = format!("__lambda{}", self.lambdas.len());
+        self.global_types.insert(global_name.clone(), Type::FnPtr);
+        global_name
+    }
 }
 
 struct Locals {
     last_var: i64,
     var_types: HashMap<i64, Type>,
     stack: Vec<Value>,
+    ir: Vec<Instruction>,
 }
 
 impl Locals {
@@ -114,6 +180,7 @@ impl Locals {
             last_var: 0,
             var_types: HashMap::new(),
             stack: Vec::new(),
+            ir: Vec::new(),
         }
     }
 
@@ -131,21 +198,19 @@ impl Locals {
         self.last_var
     }
 
-    fn rewind(&mut self) {
-        self.last_var = 0;
-        self.stack.clear();
+    fn print_ir(&self) {
+        for instruction in &self.ir {
+            println!("{instruction:?}");
+        }
     }
 }
 
-impl Display for Locals {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("last var: {}, stack:", self.last_var))?;
-        for value in &self.stack {
-            f.write_str(" ")?;
-            f.write_str(&value.to_expression())?;
-        }
-
-        Result::Ok(())
+fn print_ir(locals: &Locals, globals: &Globals) {
+    println!("main");
+    locals.print_ir();
+    for (i, lambda) in globals.lambdas.iter().enumerate() {
+        println!("__lambda{}", i + 1);
+        lambda.print_ir();
     }
 }
 
@@ -157,7 +222,7 @@ fn type_of(value: &Value, locals: &Locals, globals: &Globals) -> Type {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Arithemtic {
     Add,
     Sub,
@@ -193,142 +258,191 @@ impl Arithemtic {
     }
 }
 
+#[derive(Debug)]
 enum Instruction {
     Arithemtic(Arithemtic, Value, Value, i64),
     Print(Value),
+    Call(Value),
 }
 
-fn compile_word(
-    word: &Word,
-    locals: &mut Locals,
-    globals: &mut Globals,
-) -> Result<Option<Instruction>, String> {
-    match word {
-        Word::Int(value) => {
-            locals.push(Value::IntLiteral(*value));
-            Result::Ok(Option::None)
-        }
-        Word::String(value) => {
-            locals.push(Value::Global(globals.new_string(value)));
-            Result::Ok(Option::None)
-        }
-        Word::Id(id) if Arithemtic::knows_id(id) => {
-            let result_var = locals.new_var(Type::Int);
-            locals.push(Value::Variable(result_var));
-
-            let a = locals.pop().ok_or("Stack underflow")?;
-            let b = locals.pop().ok_or("Stack underflow")?;
-
-            if type_of(&a, locals, globals) != Type::Int
-                && type_of(&b, locals, globals) == Type::Int
-            {
-                Result::Ok(Option::Some(Instruction::Arithemtic(
-                    Arithemtic::from_id(id).expect(
-                        "arithmetic from_id should succeed because it's checked in pattern guard",
-                    ),
-                    a,
-                    b,
-                    result_var,
-                )))
-            } else {
-                Result::Err("arithmetic expects ints".to_owned())
+fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, String> {
+    let mut locals = Locals::new();
+    while let Some(word) = lexer.next_word() {
+        match word {
+            Word::Int(value) => {
+                locals.push(Value::IntLiteral(value));
             }
-        }
-        Word::Id("dup") => {
-            let value = locals.pop().ok_or("Stack underflow")?;
-            locals.push(value.clone());
-            locals.push(value);
-            Result::Ok(Option::None)
-        }
-        Word::Id("pop") => {
-            locals.pop().ok_or("Stack underflow")?;
-            Result::Ok(Option::None)
-        }
-        Word::Id("swp") => {
-            let a = locals.pop().ok_or("Stack underflow")?;
-            let b = locals.pop().ok_or("Stack underflow")?;
-            locals.push(b);
-            locals.push(a);
-            Result::Ok(Option::None)
-        }
-        Word::Id("print") => {
-            let value = locals.pop().ok_or("Stack underflow")?;
-            if type_of(&value, locals, globals) == Type::String {
-                Result::Ok(Option::Some(Instruction::Print(value)))
-            } else {
-                Result::Err("print only supports strings".to_owned())
+            Word::String(value) => {
+                locals.push(Value::Global(globals.new_string(value)));
             }
+            Word::Id(id) if Arithemtic::knows_id(id) => {
+                let result_var = locals.new_var(Type::Int);
+
+                let a = locals.pop().ok_or("Stack underflow")?;
+                let b = locals.pop().ok_or("Stack underflow")?;
+
+                if type_of(&a, &locals, globals) == Type::Int
+                    && type_of(&b, &locals, globals) == Type::Int
+                {
+                    locals.ir.push(Instruction::Arithemtic(
+                        Arithemtic::from_id(id).expect(
+                            "arithmetic from_id should succeed because it's checked in pattern guard",
+                        ),
+                        a,
+                        b,
+                        result_var,
+                    ));
+
+                    locals.push(Value::Variable(result_var));
+                } else {
+                    return Result::Err("arithmetic expects ints".to_owned());
+                }
+            }
+            Word::Id("dup") => {
+                let value = locals.pop().ok_or("Stack underflow")?;
+                locals.push(value.clone());
+                locals.push(value);
+            }
+            Word::Id("pop") => {
+                locals.pop().ok_or("Stack underflow")?;
+            }
+            Word::Id("swp") => {
+                let a = locals.pop().ok_or("Stack underflow")?;
+                let b = locals.pop().ok_or("Stack underflow")?;
+                locals.push(b);
+                locals.push(a);
+            }
+            Word::Id("print") => {
+                let value = locals.pop().ok_or("Stack underflow")?;
+                if type_of(&value, &locals, globals) == Type::String {
+                    locals.ir.push(Instruction::Print(value));
+                } else {
+                    return Result::Err("print only supports strings".to_owned());
+                }
+            }
+            Word::Id("(") => {
+                let lambda_locals = compile_function(lexer, globals)?;
+                locals.push(Value::Global(globals.new_lambda(lambda_locals)));
+            }
+            Word::Id(")") => break,
+            Word::Id("call") => {
+                let value = locals.pop().ok_or("Stack underflow")?;
+                if type_of(&value, &locals, globals) == Type::FnPtr {
+                    locals.ir.push(Instruction::Call(value));
+                } else {
+                    return Result::Err("call works only with function pointers".to_owned());
+                }
+            }
+            Word::Id(id) => return Err(format!("Unknown word {}", id)),
         }
-        Word::Id(id) => Err(format!("Unknown word {}", id)),
+    }
+    Result::Ok(locals)
+}
+
+fn compile_to_ir(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, String> {
+    let ir = compile_function(lexer, globals)?;
+    if lexer.is_empty() {
+        Result::Ok(ir)
+    } else {
+        Result::Err("unexpected closing paranthesis".to_owned())
     }
 }
 
-fn compile_to_ir(
-    words: &[Word],
-    locals: &mut Locals,
-    globals: &mut Globals,
-) -> Result<Vec<Instruction>, String> {
-    let mut ir = Vec::new();
-
-    locals.rewind();
-    for word in words {
-        if let Some(instruction) = compile_word(word, locals, globals)? {
-            ir.push(instruction);
-        }
-    }
-    Result::Ok(ir)
+struct GenerationContext {
+    last_var_number: i64,
+    var_numbers: HashMap<i64, i64>,
 }
 
-fn generate_instruction_llvm(instruction: &Instruction) -> Result<String, String> {
-    match instruction {
-        Instruction::Arithemtic(op, a, b, result_var) => Result::Ok(format!(
-            "    %{result_var} = %{} {}, {}",
-            op.to_llvm(),
-            a.to_expression(),
-            b.to_expression()
-        )),
-        Instruction::Print(value) => {
-            Result::Ok(format!("call i32 @puts({})", value.to_expression()))
+impl GenerationContext {
+    fn new() -> Self {
+        Self {
+            last_var_number: 0,
+            var_numbers: HashMap::new(),
         }
+    }
+
+    fn next_var_number(&mut self, var: i64) -> i64 {
+        self.last_var_number += 1;
+        self.var_numbers.insert(var, self.last_var_number);
+        self.last_var_number
     }
 }
 
-fn generate_llvm(
-    ir: &[Instruction],
-    locals: &mut Locals,
-    globals: &mut Globals,
+fn generate_instruction_llvm(
+    instruction: &Instruction,
+    context: &mut GenerationContext,
 ) -> Result<String, String> {
-    locals.rewind();
-    let mut llvm = String::new();
+    match instruction {
+        Instruction::Arithemtic(op, a, b, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            Result::Ok(format!(
+                "    %{result_var_number} = {} {}, {}",
+                op.to_llvm(),
+                a.to_expression(&context.var_numbers),
+                b.to_expression(&context.var_numbers)
+            ))
+        }
+        Instruction::Print(value) => {
+            context.next_var_number(-1);
+            Result::Ok(format!(
+                "    call i32 @puts({})",
+                value.to_expression(&context.var_numbers)
+            ))
+        }
+        Instruction::Call(value) => Result::Ok(format!(
+            "    call void {}()",
+            value.to_callable(&context.var_numbers)
+        )),
+    }
+}
 
-    llvm += "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n";
-    for instruction in ir {
-        let word_ir = generate_instruction_llvm(instruction)?;
+fn generate_function_llvm(locals: &Locals) -> Result<String, String> {
+    let mut llvm = String::new();
+    let mut context = GenerationContext::new();
+    for instruction in &locals.ir {
+        let word_ir = generate_instruction_llvm(instruction, &mut context)?;
         llvm += &word_ir;
         llvm += "\n";
     }
-    llvm += "    ret i32 0\n}";
+    Result::Ok(llvm)
+}
 
-    llvm += "\n";
+fn generate_llvm(locals: &Locals, globals: &Globals) -> Result<String, String> {
+    let mut llvm =
+        "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n"
+            .to_owned();
+    llvm += &generate_function_llvm(locals)?;
+    llvm += "    ret i32 0\n}\n\n";
+
+    for (i, lambda) in globals.lambdas.iter().enumerate() {
+        llvm += &format!("define void @__lambda{}() {{\n", i + 1);
+        llvm += &generate_function_llvm(lambda)?;
+        llvm += "    ret void\n}\n\n";
+    }
+
     for (i, string) in globals.strings.iter().enumerate() {
         llvm += &format!(
-            "\n@__string{} = constant [{} x i8] c\"{string}\\00\"",
+            "@__string{} = constant [{} x i8] c\"{string}\\00\"\n",
             i + 1,
             string.len() + 1
         );
     }
+    llvm += "\n";
 
-    llvm += "\n\ndeclare i32 @puts(ptr)\n";
-
+    llvm += "declare i32 @puts(ptr)\n";
     Result::Ok(llvm)
 }
 
-fn compile(code: &str) -> Result<String, String> {
-    let words = lex(code);
-    let mut locals = Locals::new();
+fn compile(code: &str, should_print_ir: bool) -> Result<String, String> {
+    let mut lexer = Lexer::new(code);
     let mut globals = Globals::new();
-    let ir = compile_to_ir(words.as_slice(), &mut locals, &mut globals)?;
-    generate_llvm(ir.as_slice(), &mut locals, &mut globals)
+
+    let locals = compile_to_ir(&mut lexer, &mut globals)?;
+    if should_print_ir {
+        print_ir(&locals, &globals);
+    }
+
+    generate_llvm(&locals, &globals)
 }
 
 fn run_stage(program: &str, input_file: &str, output_file: &str) -> Result<(), Box<dyn Error>> {
@@ -358,6 +472,8 @@ fn change_extension(path: &str, old_extension: &str, new_extension: &str) -> Str
 fn main() -> Result<(), Box<dyn Error>> {
     let mut input_file = Option::<String>::None;
     let mut output_file = Option::<String>::None;
+    let mut lex = false;
+    let mut ir = false;
     let mut print = false;
     let mut run = false;
 
@@ -367,17 +483,29 @@ fn main() -> Result<(), Box<dyn Error>> {
             "-o" => {
                 current_flag = Flag::OutputFile;
             }
-            "--print" => {
-                if print {
-                    return Result::Err(Box::from("--print specified twice"));
-                }
-                print = true;
-            }
             "--run" => {
                 if run {
                     return Result::Err(Box::from("--run specified twice"));
                 }
                 run = true;
+            }
+            "--lex" => {
+                if lex {
+                    return Result::Err(Box::from("--lex specified twice"));
+                }
+                lex = true;
+            }
+            "--ir" => {
+                if ir {
+                    return Result::Err(Box::from("--ir specified twice"));
+                }
+                ir = true;
+            }
+            "--print" => {
+                if print {
+                    return Result::Err(Box::from("--print specified twice"));
+                }
+                print = true;
             }
             flag if flag.starts_with('-') => {
                 return Result::Err(Box::from(format!("flag {} is unknown", flag)))
@@ -419,7 +547,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .open(input_file)?
         .read_to_string(&mut code)?;
 
-    let llvm = compile(code.as_str())?;
+    if lex {
+        Lexer::debug_print(code.as_str());
+    }
+
+    let llvm = compile(code.as_str(), ir)?;
 
     OpenOptions::new()
         .write(true)

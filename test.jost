@@ -1,1 +1,4 @@
 "test" print
+("test2" print)
+call
+1 2 +
