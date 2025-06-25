@@ -108,7 +108,7 @@ fn generate_instruction_llvm(
         Instruction::Not(value, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             Result::Ok(format!(
-                "    %{result_var_number} = icmp eq {}, 0",
+                "    %{result_var_number} = icmp eq i1 {}, false",
                 context.to_expression(value)
             ))
         }

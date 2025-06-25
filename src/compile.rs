@@ -203,8 +203,8 @@ fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, 
             Word::Id(id) if Arithemtic::knows_id(id) => {
                 let result_var = locals.new_var(Type::Int);
 
-                let a = locals.pop().ok_or("Stack underflow")?;
                 let b = locals.pop().ok_or("Stack underflow")?;
+                let a = locals.pop().ok_or("Stack underflow")?;
 
                 if type_of(&a, &locals, globals) == Type::Int
                     && type_of(&b, &locals, globals) == Type::Int
@@ -226,8 +226,8 @@ fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, 
             Word::Id(id) if Relational::knows_id(id) => {
                 let result_var = locals.new_var(Type::Bool);
 
-                let a = locals.pop().ok_or("Stack underflow")?;
                 let b = locals.pop().ok_or("Stack underflow")?;
+                let a = locals.pop().ok_or("Stack underflow")?;
 
                 if type_of(&a, &locals, globals) == Type::Int
                     && type_of(&b, &locals, globals) == Type::Int
@@ -249,8 +249,8 @@ fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, 
             Word::Id(id) if Logical::knows_id(id) => {
                 let result_var = locals.new_var(Type::Bool);
 
-                let a = locals.pop().ok_or("Stack underflow")?;
                 let b = locals.pop().ok_or("Stack underflow")?;
+                let a = locals.pop().ok_or("Stack underflow")?;
 
                 if type_of(&a, &locals, globals) == Type::Bool
                     && type_of(&b, &locals, globals) == Type::Bool
