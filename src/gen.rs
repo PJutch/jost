@@ -11,6 +11,7 @@ use std::collections::HashMap;
 struct GenerationContext {
     last_var_number: i64,
     var_numbers: HashMap<i64, i64>,
+    last_control_flow: i64,
 }
 
 impl GenerationContext {
@@ -18,6 +19,7 @@ impl GenerationContext {
         Self {
             last_var_number: 0,
             var_numbers: HashMap::new(),
+            last_control_flow: 0,
         }
     }
 
@@ -43,6 +45,11 @@ impl GenerationContext {
             Value::Variable(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("@{name}"),
         }
+    }
+
+    fn next_contol_flow(&mut self) -> i64 {
+        self.last_control_flow += 1;
+        self.last_control_flow
     }
 }
 
@@ -121,6 +128,12 @@ fn generate_instruction_llvm(
         }
         Instruction::Call(value) => {
             Result::Ok(format!("    call void {}()", context.to_callable(value)))
+        }
+        Instruction::If(value, lambda) => {
+            let if_id = context.next_contol_flow();
+            Result::Ok(format!(
+                "    br i1 {}, label %if{if_id}_true, label %if{if_id}_end\nif{if_id}_true:\n{}    br label %if{if_id}_end\nif{if_id}_end:\n",
+                context.to_expression(value), generate_function_llvm(lambda)?))
         }
     }
 }

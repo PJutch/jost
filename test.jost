@@ -4,5 +4,6 @@ call
 1 2 +
 1 2 == 2 3 != &&
 23 12 -
-true ! false ||
+true ! false || true ||
+if ("test3" print)
 

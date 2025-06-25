@@ -2,7 +2,7 @@ use crate::lex::Lexer;
 use crate::lex::Word;
 use std::collections::HashMap;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Type {
     Int,
     Bool,
@@ -50,6 +50,7 @@ impl Globals {
     }
 }
 
+#[derive(Debug)]
 pub struct Locals {
     last_var: i64,
     var_types: HashMap<i64, Type>,
@@ -188,6 +189,7 @@ pub enum Instruction {
     Not(Value, i64),
     Print(Value),
     Call(Value),
+    If(Value, Locals),
 }
 
 fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, String> {
@@ -320,6 +322,21 @@ fn compile_function(lexer: &mut Lexer, globals: &mut Globals) -> Result<Locals, 
                 } else {
                     return Result::Err("call works only with function pointers".to_owned());
                 }
+            }
+            Word::Id("if") => {
+                if !matches!(lexer.next_word(), Some(Word::Id("("))) {
+                    return Result::Err("if should be followed by open paranthesis".to_owned());
+                }
+
+                let condition = locals.pop().ok_or("Stack underflow")?;
+                if type_of(&condition, &locals, globals) != Type::Bool {
+                    return Result::Err("if expects a bool".to_owned());
+                }
+
+                locals.ir.push(Instruction::If(
+                    condition,
+                    compile_function(lexer, globals)?,
+                ));
             }
             Word::Id(id) => return Err(format!("Unknown word {}", id)),
         }
