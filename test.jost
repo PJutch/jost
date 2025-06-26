@@ -6,4 +6,7 @@ call
 23 12 -
 true ! false || true ||
 if ("test3" print)
+"test arg"
+String String fn (dup print) call
+print
 
