@@ -1,12 +1,12 @@
 "test" print
 ("test2" print)
 call
-1 2 +
+1 2 + Int :
 1 2 == 2 3 != &&
 23 12 -
-true ! false || true ||
+true ! false || true || Bool :
 if ("test3" print)
 "test arg"
-String String fn (dup print) call
+String String fn (String : dup print) call
 print
 

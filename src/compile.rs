@@ -415,6 +415,20 @@ fn compile_function(
             Word::Id("Bool") => {
                 locals.push(Value::Type(Type::Bool));
             }
+            Word::Id(":") => {
+                if let Value::Type(type_) = locals
+                    .pop()
+                    .ok_or("stack underflow in type assertion type")?
+                {
+                    let value = locals
+                        .pop()
+                        .ok_or("stack underflow in type assertion subject")?;
+                    if type_of(&value, &locals, globals) != type_ {
+                        return Result::Err("type assertion failed".to_owned());
+                    }
+                    locals.push(value);
+                }
+            }
             Word::Id(id) => return Err(format!("Unknown word {}", id)),
         }
     }
