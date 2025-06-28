@@ -19,8 +19,8 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::process::Command;
 
-fn compile(code: &str, should_print_ir: bool) -> Result<String, String> {
-    let mut lexer = Lexer::new(code);
+fn compile(code: &str, file_name: &str, should_print_ir: bool) -> Result<String, String> {
+    let mut lexer = Lexer::new(code, file_name);
     let mut globals = Globals::new();
 
     let locals = compile_to_ir(&mut lexer, &mut globals)?;
@@ -130,14 +130,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut code = String::new();
     OpenOptions::new()
         .read(true)
-        .open(input_file)?
+        .open(&input_file)?
         .read_to_string(&mut code)?;
 
     if lex {
         Lexer::debug_print(code.as_str());
     }
 
-    let llvm = compile(code.as_str(), ir)?;
+    let llvm = compile(code.as_str(), &input_file, ir)?;
 
     OpenOptions::new()
         .write(true)
