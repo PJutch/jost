@@ -171,7 +171,8 @@ impl Locals {
         &mut self,
         type_: Type,
         globals: &Globals,
-        position: i64,
+        start: i64,
+        end: i64,
         lexer: &Lexer,
     ) -> Result<Value, String> {
         if !self.stack.is_empty() {
@@ -182,7 +183,8 @@ impl Locals {
         }
 
         Result::Err(lexer.make_error_report(
-            position,
+            start,
+            end,
             &format!(
                 "expected ... {type_}, found {}",
                 self.stack_as_string(globals)
@@ -195,7 +197,8 @@ impl Locals {
         type1: Type,
         type2: Type,
         globals: &Globals,
-        position: i64,
+        start: i64,
+        end: i64,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
         if self.stack.len() >= 2 {
@@ -209,7 +212,8 @@ impl Locals {
         }
 
         Result::Err(lexer.make_error_report(
-            position,
+            start,
+            end,
             &format!(
                 "expected ... {type1} {type2}, found {}",
                 self.stack_as_string(globals)
@@ -221,7 +225,8 @@ impl Locals {
         &self,
         types: &[Type],
         globals: &Globals,
-        position: i64,
+        start: i64,
+        end: i64,
         lexer: &Lexer,
     ) -> String {
         let mut types_string = "".to_owned();
@@ -232,7 +237,8 @@ impl Locals {
             types_string += &format!("{type_}");
         }
         lexer.make_error_report(
-            position,
+            start,
+            end,
             &format!(
                 "expected ... {types_string}, found {}",
                 self.stack_as_string(globals)
@@ -244,11 +250,12 @@ impl Locals {
         &mut self,
         types: &[Type],
         globals: &Globals,
-        position: i64,
+        start: i64,
+        end: i64,
         lexer: &Lexer,
     ) -> Result<Vec<Value>, String> {
         if self.stack.len() < types.len() {
-            return Result::Err(self.popn_of_type_error_message(types, globals, position, lexer));
+            return Result::Err(self.popn_of_type_error_message(types, globals, start, end, lexer));
         }
 
         for (i, type_) in types.iter().enumerate() {
@@ -259,7 +266,7 @@ impl Locals {
             ) != *type_
             {
                 return Result::Err(
-                    self.popn_of_type_error_message(types, globals, position, lexer),
+                    self.popn_of_type_error_message(types, globals, start, end, lexer),
                 );
             }
         }
@@ -275,7 +282,8 @@ impl Locals {
     fn pop_of_any_type(
         &mut self,
         globals: &Globals,
-        position: i64,
+        start: i64,
+        end: i64,
         lexer: &Lexer,
     ) -> Result<Value, String> {
         if let Some(value) = self.pop() {
@@ -283,7 +291,8 @@ impl Locals {
         }
 
         Result::Err(lexer.make_error_report(
-            position,
+            start,
+            end,
             &format!("expected ... A, found {}", self.stack_as_string(globals)),
         ))
     }
@@ -291,7 +300,8 @@ impl Locals {
     fn pop2_of_any_type(
         &mut self,
         globals: &Globals,
-        position: i64,
+        start: i64,
+        end: i64,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
         if self.stack.len() >= 2 {
@@ -301,7 +311,8 @@ impl Locals {
         }
 
         Result::Err(lexer.make_error_report(
-            position,
+            start,
+            end,
             &format!("expected ... A A, found {}", self.stack_as_string(globals)),
         ))
     }
@@ -418,14 +429,16 @@ fn compile_call_args_error_message(
     locals: &Locals,
     globals: &Globals,
     lexer: &Lexer,
-    position: i64,
+    start: i64,
+    end: i64,
 ) -> String {
     let args_string = display_type_list(arg_types);
     let results_string = display_type_list(result_types);
     lexer.make_error_report(
-        position,
+        start,
+        end,
         &format!(
-            "expected ... {args_string} ({args_string} {results_string} FnPtr), found {}",
+            "expected ... {args_string} fn ({args_string}) -> ({results_string}), found {}",
             locals.stack_as_string(globals)
         ),
     )
@@ -435,7 +448,8 @@ fn compile_call(
     locals: &mut Locals,
     globals: &Globals,
     lexer: &Lexer,
-    position: i64,
+    start: i64,
+    end: i64,
 ) -> Result<(), String> {
     if !locals.stack.is_empty() {
         let fn_ptr = &locals.stack[locals.stack.len() - 1];
@@ -447,13 +461,14 @@ fn compile_call(
                     locals,
                     globals,
                     lexer,
-                    position,
+                    start,
+                    end,
                 ));
             }
 
             for (i, type_) in arg_types.iter().enumerate() {
                 if type_of(
-                    &locals.stack[locals.stack.len() - arg_types.len() + i],
+                    &locals.stack[locals.stack.len() - arg_types.len() - 1 + i],
                     locals,
                     globals,
                 ) != *type_
@@ -464,18 +479,19 @@ fn compile_call(
                         locals,
                         globals,
                         lexer,
-                        position,
+                        start,
+                        end,
                     ));
                 }
             }
+
+            let fn_ptr = locals.pop().expect("stack len is checked above");
 
             let mut args = Vec::new();
             for _ in 0..arg_types.len() {
                 args.push(locals.pop().expect("stack len is checked above"));
             }
             args.reverse();
-
-            let fn_ptr = locals.pop().expect("stack len is checked above");
 
             let mut results = Vec::new();
             for result_type in &result_types {
@@ -492,11 +508,9 @@ fn compile_call(
     }
 
     Result::Err(lexer.make_error_report(
-        position,
-        &format!(
-            "expected ... FnPtr, found {}",
-            locals.stack_as_string(globals)
-        ),
+        start,
+        end,
+        &format!("expected ... fn, found {}", locals.stack_as_string(globals)),
     ))
 }
 
@@ -504,7 +518,8 @@ fn do_type_assertion(
     locals: &mut Locals,
     globals: &Globals,
     lexer: &Lexer,
-    position: i64,
+    start: i64,
+    end: i64,
 ) -> Result<(), String> {
     if locals.stack.len() >= 2 {
         let value = &locals.stack[locals.stack.len() - 2];
@@ -514,7 +529,8 @@ fn do_type_assertion(
 
             if type_of(value, locals, globals) != type_ {
                 return Result::Err(lexer.make_error_report(
-                    position,
+                    start,
+                    end,
                     &format!(
                         "expected ... {type_}, found {}",
                         locals.stack_as_string(globals)
@@ -522,11 +538,13 @@ fn do_type_assertion(
                 ));
             }
             locals.pop();
+            return Result::Ok(());
         }
     }
 
     Result::Err(lexer.make_error_report(
-        position,
+        start,
+        end,
         &format!(
             "expected ... value Type, found {}",
             locals.stack_as_string(globals)
@@ -551,8 +569,9 @@ fn compile_function(
             Word::String(value, _, _) => {
                 locals.push(Value::Global(globals.new_string(value)));
             }
-            Word::Id(id, start, _) if Arithemtic::knows_id(id) => {
-                let (a, b) = locals.pop2_of_type(Type::Int, Type::Int, globals, start, lexer)?;
+            Word::Id(id, start, end) if Arithemtic::knows_id(id) => {
+                let (a, b) =
+                    locals.pop2_of_type(Type::Int, Type::Int, globals, start, end, lexer)?;
 
                 let result_var = locals.new_var(Type::Int);
                 locals.push(Value::Variable(result_var));
@@ -566,8 +585,9 @@ fn compile_function(
                     result_var,
                 ));
             }
-            Word::Id(id, start, _) if Relational::knows_id(id) => {
-                let (a, b) = locals.pop2_of_type(Type::Int, Type::Int, globals, start, lexer)?;
+            Word::Id(id, start, end) if Relational::knows_id(id) => {
+                let (a, b) =
+                    locals.pop2_of_type(Type::Int, Type::Int, globals, start, end, lexer)?;
 
                 let result_var = locals.new_var(Type::Bool);
                 locals.push(Value::Variable(result_var));
@@ -581,8 +601,9 @@ fn compile_function(
                     result_var,
                 ));
             }
-            Word::Id(id, start, _) if Logical::knows_id(id) => {
-                let (a, b) = locals.pop2_of_type(Type::Bool, Type::Bool, globals, start, lexer)?;
+            Word::Id(id, start, end) if Logical::knows_id(id) => {
+                let (a, b) =
+                    locals.pop2_of_type(Type::Bool, Type::Bool, globals, start, end, lexer)?;
 
                 let result_var = locals.new_var(Type::Bool);
                 locals.push(Value::Variable(result_var));
@@ -596,8 +617,8 @@ fn compile_function(
                     result_var,
                 ));
             }
-            Word::Id("!", start, _) => {
-                let value = locals.pop_of_type(Type::Bool, globals, start, lexer)?;
+            Word::Id("!", start, end) => {
+                let value = locals.pop_of_type(Type::Bool, globals, start, end, lexer)?;
 
                 let result_var = locals.new_var(Type::Bool);
                 locals.push(Value::Variable(result_var));
@@ -610,21 +631,21 @@ fn compile_function(
             Word::Id("false", _, _) => {
                 locals.push(Value::BoolLiteral(false));
             }
-            Word::Id("dup", start, _) => {
-                let value = locals.pop_of_any_type(globals, start, lexer)?;
+            Word::Id("dup", start, end) => {
+                let value = locals.pop_of_any_type(globals, start, end, lexer)?;
                 locals.push(value.clone());
                 locals.push(value);
             }
-            Word::Id("pop", start, _) => {
-                locals.pop_of_any_type(globals, start, lexer)?;
+            Word::Id("pop", start, end) => {
+                locals.pop_of_any_type(globals, start, end, lexer)?;
             }
-            Word::Id("swp", start, _) => {
-                let (a, b) = locals.pop2_of_any_type(globals, start, lexer)?;
+            Word::Id("swp", start, end) => {
+                let (a, b) = locals.pop2_of_any_type(globals, start, end, lexer)?;
                 locals.push(b);
                 locals.push(a);
             }
-            Word::Id("print", start, _) => {
-                let value = locals.pop_of_type(Type::String, globals, start, lexer)?;
+            Word::Id("print", start, end) => {
+                let value = locals.pop_of_type(Type::String, globals, start, end, lexer)?;
                 locals.ir.push(Instruction::Print(value));
             }
             Word::Id("(", _, _) => {
@@ -633,30 +654,20 @@ fn compile_function(
                 locals.push(Value::Global(globals.new_lambda(lambda_locals)));
             }
             Word::Id(")", _, _) => break,
-            Word::Id("call", start, _) => compile_call(&mut locals, globals, lexer, start)?,
-            Word::Id("if", start, _) => {
-                if !matches!(lexer.next_word(), Some(Word::Id("(", _, _))) {
-                    return Result::Err(
-                        lexer.make_error_report(start, "if should be followed by open paranthesis"),
-                    );
-                }
-
-                let condition = locals.pop_of_type(Type::Bool, globals, start, lexer)?;
-
+            Word::Id("call", start, end) => compile_call(&mut locals, globals, lexer, start, end)?,
+            Word::Id("if", start, end) => {
+                lexer.consume_and_expect("(")?;
+                let condition = locals.pop_of_type(Type::Bool, globals, start, end, lexer)?;
                 locals.ir.push(Instruction::If(
                     condition,
                     compile_function(lexer, globals, Vec::new(), Vec::new(), false)?,
                 ));
             }
-            Word::Id("fn", start, _) => {
-                if !matches!(lexer.next_word(), Some(Word::Id("(", _, _))) {
-                    return Result::Err(
-                        lexer.make_error_report(start, "fn should be followed by open paranthesis"),
-                    );
-                }
+            Word::Id("fn", start, end) => {
+                lexer.consume_and_expect("(")?;
 
                 let (arg, result) =
-                    locals.pop2_of_type(Type::Type_, Type::Type_, globals, start, lexer)?;
+                    locals.pop2_of_type(Type::Type_, Type::Type_, globals, start, end, lexer)?;
 
                 let lambda_locals = compile_function(
                     lexer,
@@ -676,20 +687,27 @@ fn compile_function(
             Word::Id("Bool", _, _) => {
                 locals.push(Value::Type(Type::Bool));
             }
-            Word::Id(":", start, _) => do_type_assertion(&mut locals, globals, lexer, start)?,
-            Word::Id(id, start, _) => {
-                return Err(lexer.make_error_report(start, &format!("Unknown word {}", id)))
+            Word::Id(":", start, end) => {
+                do_type_assertion(&mut locals, globals, lexer, start, end)?
+            }
+            Word::Id(id, start, end) => {
+                return Err(lexer.make_error_report(start, end, &format!("Unknown word {}", id)))
             }
         }
         last_pos = lexer.current_byte as i64;
     }
 
-    if !lexer.is_empty() {
-        return Result::Err(lexer.make_error_report(last_pos, "unexpected closing paranthesis"));
+    if consume_all && !lexer.is_empty() {
+        return Result::Err(lexer.make_error_report(
+            last_pos,
+            last_pos + 1,
+            "unexpected closing paranthesis",
+        ));
     }
 
     let result_types = locals.result_types.clone();
-    locals.result_values = locals.popn_of_type(&result_types, globals, last_pos, lexer)?;
+    locals.result_values =
+        locals.popn_of_type(&result_types, globals, last_pos, last_pos + 1, lexer)?;
     Result::Ok(locals)
 }
 

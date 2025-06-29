@@ -55,7 +55,7 @@ fn change_extension(path: &str, old_extension: &str, new_extension: &str) -> Str
     path.trim_end_matches(old_extension).to_owned() + new_extension
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn do_work() -> Result<(), Box<dyn Error>> {
     let mut input_file = Option::<String>::None;
     let mut output_file = Option::<String>::None;
     let mut lex = false;
@@ -160,4 +160,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Result::Ok(())
+}
+
+fn main() {
+    match do_work() {
+        Ok(()) => {}
+        Err(err) => println!("{err}"),
+    }
 }
