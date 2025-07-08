@@ -35,6 +35,7 @@ impl GenerationContext {
         match value {
             Value::IntLiteral(value) => value.to_string(),
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
+            Value::ListLiteral(_) => todo!("represent lists in runtime"),
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("@{name}"),
@@ -45,6 +46,7 @@ impl GenerationContext {
         match value {
             Value::IntLiteral(_) => panic!("trying to call int literal"),
             Value::BoolLiteral(_) => panic!("trying to call bool literal"),
+            Value::ListLiteral(_) => panic!("trying to call a list literal"),
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("@{name}"),
@@ -83,6 +85,7 @@ fn to_llvm_type(type_: &Type) -> &'static str {
         Type::Int => "i64",
         Type::Bool => "i1",
         Type::String => "ptr",
+        Type::List => panic!("represent lists in runtime"),
         Type::FnPtr(_, _) => "ptr",
         Type::Type_ => panic!("types can't be used at runtime"),
     }

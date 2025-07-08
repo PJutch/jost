@@ -70,7 +70,7 @@ impl<'a, 'b> Lexer<'a, 'b> {
                 quoted = true;
             } else if !quoted
                 && get_byte(self.code, current_byte)
-                    .is_none_or(|c| c == b')' && token_start + 1 < current_byte)
+                    .is_none_or(|c| c == b')' && token_start < current_byte)
             {
                 if let Option::Some(token) =
                     parse_token(self.code, token_start as i64, current_byte as i64)

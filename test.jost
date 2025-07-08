@@ -6,7 +6,7 @@ call
 23 12 -
 true ! false || true || Bool :
 if ("test3" print)
-"test arg"
-String String fn (String : dup print) call
+"test arg" "test arg 2"
+[] String , String , [] String , fn (String : print String :) call
 print
 

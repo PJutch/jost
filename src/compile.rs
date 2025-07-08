@@ -1,5 +1,6 @@
 use crate::lex::Lexer;
 use crate::lex::Word;
+use core::panic;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -9,6 +10,7 @@ pub enum Type {
     Bool,
     String,
     FnPtr(Vec<Type>, Vec<Type>),
+    List, // TODO: implement lists of type other than Type
     Type_,
 }
 
@@ -35,6 +37,7 @@ impl Display for Type {
                 }
                 f.write_str(")")
             }
+            Type::List => f.write_str("List"),
             Type::Type_ => f.write_str("Type"),
         }
     }
@@ -46,7 +49,7 @@ fn display_type_list(types: Vec<Type>) -> String {
         if i > 0 {
             s += " ";
         }
-        s += &format!("{}", type_);
+        s += &format!("{type_}");
     }
     s
 }
@@ -55,6 +58,7 @@ fn display_type_list(types: Vec<Type>) -> String {
 pub enum Value {
     IntLiteral(i64),
     BoolLiteral(bool),
+    ListLiteral(Vec<Type>), // TODO: implement lists of type other than Type
     Type(Type),
     Variable(i64),
     Arg(i64),
@@ -62,10 +66,17 @@ pub enum Value {
 }
 
 impl Value {
-    fn unwrap_type(&self) -> &Type {
+    fn unwrap_type(self) -> Type {
         match self {
             Value::Type(type_) => type_,
             _ => panic!("unwrap type assumed that value {self:?} is a type"),
+        }
+    }
+
+    fn unwrap_list_literal(self) -> Vec<Type> {
+        match self {
+            Value::ListLiteral(types) => types,
+            _ => panic!("unwrap list literal assumes that value {self:?} is a list literal"),
         }
     }
 }
@@ -331,6 +342,7 @@ fn type_of(value: &Value, locals: &Locals, globals: &Globals) -> Type {
     match value {
         Value::IntLiteral(_) => Type::Int,
         Value::BoolLiteral(_) => Type::Bool,
+        Value::ListLiteral(_) => Type::List,
         Value::Type(_) => Type::Type_,
         Value::Variable(index) => locals.var_types[index].clone(),
         Value::Arg(index) => locals.arg_types[*index as usize].clone(),
@@ -648,6 +660,19 @@ fn compile_function(
                 let value = locals.pop_of_type(Type::String, globals, start, end, lexer)?;
                 locals.ir.push(Instruction::Print(value));
             }
+            Word::Id("[]", _, _) => {
+                locals.push(Value::ListLiteral(Vec::new()));
+            }
+            Word::Id(",", start, end) => {
+                // TODO: support lists of type other than type
+                let (list, value) =
+                    locals.pop2_of_type(Type::List, Type::Type_, globals, start, end, lexer)?;
+
+                let value = value.unwrap_type();
+                let mut list = list.unwrap_list_literal();
+                list.push(value);
+                locals.push(Value::ListLiteral(list));
+            }
             Word::Id("(", _, _) => {
                 let lambda_locals =
                     compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
@@ -666,14 +691,14 @@ fn compile_function(
             Word::Id("fn", start, end) => {
                 lexer.consume_and_expect("(")?;
 
-                let (arg, result) =
-                    locals.pop2_of_type(Type::Type_, Type::Type_, globals, start, end, lexer)?;
+                let (args, results) =
+                    locals.pop2_of_type(Type::List, Type::List, globals, start, end, lexer)?;
 
                 let lambda_locals = compile_function(
                     lexer,
                     globals,
-                    Vec::from([arg.unwrap_type().clone()]),
-                    Vec::from([result.unwrap_type().clone()]),
+                    args.unwrap_list_literal(),
+                    results.unwrap_list_literal(),
                     false,
                 )?;
                 locals.push(Value::Global(globals.new_lambda(lambda_locals)));
@@ -691,7 +716,7 @@ fn compile_function(
                 do_type_assertion(&mut locals, globals, lexer, start, end)?
             }
             Word::Id(id, start, end) => {
-                return Err(lexer.make_error_report(start, end, &format!("Unknown word {}", id)))
+                return Err(lexer.make_error_report(start, end, &format!("Unknown word {id}")))
             }
         }
         last_pos = lexer.current_byte as i64;

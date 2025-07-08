@@ -36,7 +36,8 @@ fn run_stage(program: &str, input_file: &str, output_file: &str) -> Result<(), B
         .arg("-o")
         .arg(output_file)
         .arg(input_file)
-        .status()?
+        .status()
+        .map_err(|err| format!("running {program} failed: {err}"))?
         .success()
     {
         Result::Ok(())
@@ -94,7 +95,7 @@ fn do_work() -> Result<(), Box<dyn Error>> {
                 print = true;
             }
             flag if flag.starts_with('-') => {
-                return Result::Err(Box::from(format!("flag {} is unknown", flag)))
+                return Result::Err(Box::from(format!("flag {flag} is unknown")))
             }
             arg => match current_flag {
                 Flag::None => {
