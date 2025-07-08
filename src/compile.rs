@@ -431,7 +431,7 @@ pub enum Instruction {
     Logical(Logical, Value, Value, i64),
     Not(Value, i64),
     Print(Value),
-    Call(Value, Vec<Type>, Vec<Value>, Vec<i64>),
+    Call(Value, Vec<Type>, Vec<Value>, Vec<Type>, Vec<i64>),
     If(Value, Locals),
 }
 
@@ -512,9 +512,13 @@ fn compile_call(
                 results.push(result_var);
             }
 
-            locals
-                .ir
-                .push(Instruction::Call(fn_ptr, arg_types.clone(), args, results));
+            locals.ir.push(Instruction::Call(
+                fn_ptr,
+                arg_types.clone(),
+                args,
+                result_types,
+                results,
+            ));
             return Result::Ok(());
         }
     }

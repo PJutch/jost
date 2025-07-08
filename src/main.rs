@@ -19,7 +19,12 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::process::Command;
 
-fn compile(code: &str, file_name: &str, should_print_ir: bool) -> Result<String, String> {
+fn compile(
+    code: &str,
+    file_name: &str,
+    should_print_ir: bool,
+    numbering_fix: bool,
+) -> Result<String, String> {
     let mut lexer = Lexer::new(code, file_name);
     let mut globals = Globals::new();
 
@@ -28,7 +33,7 @@ fn compile(code: &str, file_name: &str, should_print_ir: bool) -> Result<String,
         print_ir(&locals, &globals);
     }
 
-    generate_llvm(&locals, &globals)
+    generate_llvm(&locals, &globals, numbering_fix)
 }
 
 fn run_stage(program: &str, input_file: &str, output_file: &str) -> Result<(), Box<dyn Error>> {
@@ -63,6 +68,7 @@ fn do_work() -> Result<(), Box<dyn Error>> {
     let mut ir = false;
     let mut print = false;
     let mut run = false;
+    let mut numbering_fix = false;
 
     let mut current_flag = Flag::None;
     for arg in env::args().skip(1) {
@@ -93,6 +99,12 @@ fn do_work() -> Result<(), Box<dyn Error>> {
                     return Result::Err(Box::from("--print specified twice"));
                 }
                 print = true;
+            }
+            "--numbering-fix" => {
+                if numbering_fix {
+                    return Result::Err(Box::from("--numbering-fix specified twice"));
+                }
+                numbering_fix = true;
             }
             flag if flag.starts_with('-') => {
                 return Result::Err(Box::from(format!("flag {flag} is unknown")))
@@ -138,7 +150,7 @@ fn do_work() -> Result<(), Box<dyn Error>> {
         Lexer::debug_print(code.as_str());
     }
 
-    let llvm = compile(code.as_str(), &input_file, ir)?;
+    let llvm = compile(code.as_str(), &input_file, ir, numbering_fix)?;
 
     OpenOptions::new()
         .write(true)
