@@ -1,7 +1,7 @@
 use crate::compile::Arithemtic;
+use crate::compile::Function;
 use crate::compile::Globals;
 use crate::compile::Instruction;
-use crate::compile::Locals;
 use crate::compile::Logical;
 use crate::compile::Relational;
 use crate::compile::Type;
@@ -118,7 +118,6 @@ fn to_llvm_type_multiple(types: &[Type]) -> String {
 fn generate_instruction_llvm(
     instruction: &Instruction,
     context: &mut GenerationContext,
-    numbering_fix: bool,
 ) -> Result<String, String> {
     match instruction {
         Instruction::Arithemtic(op, a, b, result_var) => {
@@ -212,31 +211,37 @@ fn generate_instruction_llvm(
 
             Result::Ok(llvm)
         }
-        Instruction::If(value, lambda) => {
+        Instruction::If(condition, block) => {
             let if_id = context.next_contol_flow();
-            Result::Ok(format!(
-                "    br i1 {}, label %if{if_id}_true, label %if{if_id}_end\nif{if_id}_true:\n{}    br label %if{if_id}_end\nif{if_id}_end:",
-                context.to_expression(value), generate_function_llvm(lambda, context, numbering_fix)?))
+            let mut llvm = format!(
+                "    br i1 {}, label %if{if_id}_true, label %if{if_id}_end\nif{if_id}_true:\n",
+                context.to_expression(condition)
+            );
+            for instruction in &block.ir {
+                llvm += &generate_instruction_llvm(instruction, context)?;
+            }
+            llvm += &format!("    br label %if{if_id}_end\nif{if_id}_end:");
+            Result::Ok(llvm)
         }
     }
 }
 
 fn generate_function_llvm(
-    locals: &Locals,
+    function: &Function,
     context: &mut GenerationContext,
     numbering_fix: bool,
 ) -> Result<String, String> {
     let mut llvm = String::new();
 
-    for i in 0..locals.arg_types.len() {
+    for i in 0..function.arg_types.len() {
         context.next_var_number(i as i64);
     }
     if numbering_fix {
         context.next_var_number_anonymous();
     }
 
-    for instruction in &locals.ir {
-        let word_ir = generate_instruction_llvm(instruction, context, numbering_fix)?;
+    for instruction in &function.get_single_scope().ir {
+        let word_ir = generate_instruction_llvm(instruction, context)?;
         llvm += &word_ir;
         llvm += "\n";
     }
@@ -244,14 +249,14 @@ fn generate_function_llvm(
     Result::Ok(llvm)
 }
 
-fn generate_llvm_sig(name: &str, locals: &Locals) -> String {
+fn generate_llvm_sig(name: &str, function: &Function) -> String {
     let mut llvm = "define ".to_owned();
-    llvm += &to_llvm_type_multiple(&locals.result_types);
+    llvm += &to_llvm_type_multiple(&function.result_types);
     llvm += " ";
     llvm += name;
 
     llvm += "(";
-    for (i, arg_type) in locals.arg_types.iter().enumerate() {
+    for (i, arg_type) in function.arg_types.iter().enumerate() {
         if i > 0 {
             llvm += ", ";
         }
@@ -265,23 +270,24 @@ fn generate_llvm_sig(name: &str, locals: &Locals) -> String {
     llvm
 }
 
-fn generate_returns(locals: &Locals, context: &mut GenerationContext) -> String {
-    let returned_type = to_llvm_type_multiple(&locals.result_types);
-    if locals.result_values.len() > 1 {
+fn generate_returns(function: &Function, context: &mut GenerationContext) -> String {
+    let result_values = &function.get_single_scope().stack;
+    let returned_type = to_llvm_type_multiple(&function.result_types);
+    if result_values.len() > 1 {
         let mut result = "".to_owned();
         let mut current_struct = "undef".to_owned();
-        for (i, value) in locals.result_values.iter().enumerate() {
+        for (i, value) in result_values.iter().enumerate() {
             let var_number = context.next_var_number_anonymous();
             result += &format!(
                 "    %{var_number} = insertvalue {returned_type} {current_struct}, {} {}, {i}\n",
-                to_llvm_type(&locals.result_types[i]),
+                to_llvm_type(&function.result_types[i]),
                 context.to_expression(value)
             );
             current_struct = format!("%{var_number}")
         }
         result += &format!("    ret {returned_type} {current_struct}\n");
         result
-    } else if let Some(value) = locals.result_values.first() {
+    } else if let Some(value) = result_values.first() {
         format!(
             "    ret {} {}\n",
             returned_type,
@@ -293,7 +299,7 @@ fn generate_returns(locals: &Locals, context: &mut GenerationContext) -> String 
 }
 
 pub fn generate_llvm(
-    locals: &Locals,
+    function: &Function,
     globals: &Globals,
     numbering_fix: bool,
 ) -> Result<String, String> {
@@ -301,7 +307,7 @@ pub fn generate_llvm(
         "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n"
             .to_owned();
 
-    llvm += &generate_function_llvm(locals, &mut GenerationContext::new(), numbering_fix)?;
+    llvm += &generate_function_llvm(function, &mut GenerationContext::new(), numbering_fix)?;
     llvm += "    ret i32 0\n}\n\n";
 
     for (i, lambda) in globals.lambdas.iter().enumerate() {
