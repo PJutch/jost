@@ -1,11 +1,11 @@
-use crate::compile::Arithemtic;
-use crate::compile::Function;
-use crate::compile::Globals;
-use crate::compile::Instruction;
-use crate::compile::Logical;
-use crate::compile::Relational;
-use crate::compile::Type;
-use crate::compile::Value;
+use crate::ir::Arithemtic;
+use crate::ir::Function;
+use crate::ir::Globals;
+use crate::ir::Instruction;
+use crate::ir::Logical;
+use crate::ir::Relational;
+use crate::ir::Type;
+use crate::ir::Value;
 
 use core::panic;
 use std::collections::HashMap;

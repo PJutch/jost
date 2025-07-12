@@ -1,13 +1,14 @@
-mod compile;
 mod gen;
-mod lex;
-
-use crate::compile::compile_to_ir;
-use crate::compile::print_ir;
-use crate::compile::Globals;
-
 use crate::gen::generate_llvm;
 
+mod ir;
+use crate::ir::print_ir;
+use crate::ir::Globals;
+
+mod compile;
+use crate::compile::compile_to_ir;
+
+mod lex;
 use crate::lex::Lexer;
 
 use core::str;
