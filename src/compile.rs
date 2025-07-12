@@ -117,7 +117,7 @@ impl Globals {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StackPosition {
     scope: usize,
     item: usize,
@@ -129,6 +129,8 @@ pub struct Scope {
     pub ir: Vec<Instruction>,
 
     to_borrow: Option<StackPosition>,
+
+    end: i64,
 }
 
 pub struct Function {
@@ -177,6 +179,7 @@ impl Function {
         while pos.item == 0 && pos.scope > 0 {
             if let Some(scope) = self.scopes.get(pos.scope) {
                 pos = scope.to_borrow?;
+                pos.item += 1;
             } else {
                 pos.scope -= 1;
                 pos.item = self.scopes[pos.scope].stack.len();
@@ -200,11 +203,8 @@ impl Function {
             stack: Vec::new(),
             ir: Vec::new(),
             to_borrow: self.top_stack_position(),
+            end: 0,
         });
-    }
-
-    fn pop_scope(&mut self) -> Option<Scope> {
-        self.scopes.pop()
     }
 
     pub fn get_single_scope(&self) -> &Scope {
@@ -217,6 +217,13 @@ impl Function {
         self.scopes
             .first()
             .expect("get_single_scope expects function to have a scope")
+    }
+
+    fn print_to_borrow(&self) {
+        for scope in &self.scopes {
+            print!("{:?} ", scope.to_borrow);
+        }
+        println!();
     }
 
     fn push(&mut self, value: Value) {
@@ -498,6 +505,14 @@ impl Logical {
 }
 
 #[derive(Debug)]
+pub struct Phi {
+    pub result_var: i64,
+    pub result_type: Type,
+    pub case1: Value,
+    pub case2: Value,
+}
+
+#[derive(Debug)]
 pub enum Instruction {
     Arithemtic(Arithemtic, Value, Value, i64),
     Relational(Relational, Value, Value, i64),
@@ -505,7 +520,7 @@ pub enum Instruction {
     Not(Value, i64),
     Print(Value),
     Call(Value, Vec<Type>, Vec<Value>, Vec<Type>, Vec<i64>),
-    If(Value, Scope),
+    If(Value, Scope, Vec<Phi>),
 }
 
 fn compile_call(
@@ -592,6 +607,71 @@ fn do_type_assertion(
             function.stack_as_string(globals)
         ),
     ))
+}
+
+fn compile_if(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    start: i64,
+    end: i64,
+) -> Result<(), String> {
+    lexer.consume_and_expect("(")?;
+    let condition = function.pop_of_type(Type::Bool, globals, start, end, lexer)?;
+
+    function.new_scope();
+    compile_block(lexer, function, globals, false)?;
+
+    let popped_scope = function
+        .scopes
+        .pop()
+        .expect("pop_if expects at least one scope to exist");
+
+    let mut borrowed_values = Vec::new();
+    while function.top_stack_position() != popped_scope.to_borrow {
+        borrowed_values.push(
+            function.pop().expect(
+                "popped_scope.to_borrow is below us in the stack so there is a value to pop",
+            ),
+        );
+    }
+
+    let mut expected_types = Vec::new();
+    for value in &borrowed_values {
+        expected_types.push(type_of(value, function, globals));
+    }
+
+    let mut found_types = Vec::new();
+    for value in &popped_scope.stack {
+        found_types.push(type_of(value, function, globals));
+    }
+
+    if expected_types != found_types {
+        return Result::Err(lexer.make_error_report(
+            start,
+            end,
+            &format!(
+                "if is expected to return {}, got {}",
+                display_type_list(&expected_types),
+                display_type_list(&found_types)
+            ),
+        ));
+    }
+
+    let mut phis = Vec::new();
+    for i in 0..popped_scope.stack.len() {
+        let result_var = function.new_var(expected_types[i].clone());
+        function.push(Value::Variable(result_var));
+        phis.push(Phi {
+            result_var,
+            result_type: expected_types[i].clone(),
+            case1: popped_scope.stack[i].clone(),
+            case2: borrowed_values[i].clone(),
+        });
+    }
+
+    function.add_instruction(Instruction::If(condition, popped_scope, phis));
+    Result::Ok(())
 }
 
 fn compile_block(
@@ -707,16 +787,7 @@ fn compile_block(
             }
             Word::Id(")", _, _) => break,
             Word::Id("call", start, end) => compile_call(function, globals, lexer, start, end)?,
-            Word::Id("if", start, end) => {
-                lexer.consume_and_expect("(")?;
-                let condition = function.pop_of_type(Type::Bool, globals, start, end, lexer)?;
-                function.new_scope();
-                compile_block(lexer, function, globals, false)?;
-                let block = function
-                    .pop_scope()
-                    .expect("scope should becreated by compile block");
-                function.add_instruction(Instruction::If(condition, block));
-            }
+            Word::Id("if", start, end) => compile_if(function, globals, lexer, start, end)?,
             Word::Id("fn", start, end) => {
                 lexer.consume_and_expect("(")?;
 
@@ -748,6 +819,12 @@ fn compile_block(
         }
         last_pos = lexer.current_byte as i64;
     }
+
+    function
+        .scopes
+        .last_mut()
+        .expect("compile_block expects at least one scope to exist")
+        .end = last_pos;
 
     if consume_all && !lexer.is_empty() {
         return Result::Err(lexer.make_error_report(

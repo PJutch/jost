@@ -1,12 +1,19 @@
 "test" print
+
 ("test2" print)
 call
-1 2 + Int :
-1 2 == 2 3 != &&
-23 12 -
+
+1 2 + Int : pop
+1 2 == 2 3 != && pop
+23 12 - pop
+
 true ! false || true || Bool :
 if ("test3" print)
+
 "test arg" "test arg 2"
 [] String , String , [] String , String , fn (String : dup print) call
 print
 print
+
+"test if touching stack" true if (dup print)
+true if (pop "test if changing stack") print

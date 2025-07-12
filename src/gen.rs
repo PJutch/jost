@@ -123,7 +123,7 @@ fn generate_instruction_llvm(
         Instruction::Arithemtic(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             Result::Ok(format!(
-                "    %{result_var_number} = {} i64 {}, {}",
+                "    %{result_var_number} = {} i64 {}, {}\n",
                 llvm_arithmetic(*op),
                 context.to_expression(a),
                 context.to_expression(b),
@@ -132,7 +132,7 @@ fn generate_instruction_llvm(
         Instruction::Relational(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             Result::Ok(format!(
-                "    %{result_var_number} = icmp {} i64 {}, {}",
+                "    %{result_var_number} = icmp {} i64 {}, {}\n",
                 llvm_relational(*op),
                 context.to_expression(a),
                 context.to_expression(b),
@@ -142,12 +142,12 @@ fn generate_instruction_llvm(
             let result_var_number = context.next_var_number(*result_var);
             match op {
                 Logical::And => Result::Ok(format!(
-                    "    %{result_var_number} = select i1 {}, i1 {}, i1 false",
+                    "    %{result_var_number} = select i1 {}, i1 {}, i1 false\n",
                     context.to_expression(a),
                     context.to_expression(b)
                 )),
                 Logical::Or => Result::Ok(format!(
-                    "    %{result_var_number} = select i1 {}, i1 true, i1 {}",
+                    "    %{result_var_number} = select i1 {}, i1 true, i1 {}\n",
                     context.to_expression(a),
                     context.to_expression(b)
                 )),
@@ -156,14 +156,14 @@ fn generate_instruction_llvm(
         Instruction::Not(value, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             Result::Ok(format!(
-                "    %{result_var_number} = icmp eq i1 {}, false",
+                "    %{result_var_number} = icmp eq i1 {}, false\n",
                 context.to_expression(value)
             ))
         }
         Instruction::Print(value) => {
             context.next_var_number(-1);
             Result::Ok(format!(
-                "    call i32 @puts(ptr {})",
+                "    call i32 @puts(ptr {})\n",
                 context.to_expression(value)
             ))
         }
@@ -211,16 +211,28 @@ fn generate_instruction_llvm(
 
             Result::Ok(llvm)
         }
-        Instruction::If(condition, block) => {
+        Instruction::If(condition, block, phis) => {
             let if_id = context.next_contol_flow();
             let mut llvm = format!(
-                "    br i1 {}, label %if{if_id}_true, label %if{if_id}_end\nif{if_id}_true:\n",
+                "    br label %if{if_id}_start\nif{if_id}_start:\n    br i1 {}, label %if{if_id}_true, label %if{if_id}_end\nif{if_id}_true:\n",
                 context.to_expression(condition)
             );
+
             for instruction in &block.ir {
                 llvm += &generate_instruction_llvm(instruction, context)?;
             }
-            llvm += &format!("    br label %if{if_id}_end\nif{if_id}_end:");
+            llvm += &format!("    br label %if{if_id}_end\nif{if_id}_end:\n");
+
+            for phi in phis {
+                llvm += &format!(
+                    "    %{} = phi {} [ {}, %if{if_id}_true ], [ {}, %if{if_id}_start ]\n",
+                    context.next_var_number(phi.result_var),
+                    to_llvm_type(&phi.result_type),
+                    context.to_expression(&phi.case1),
+                    context.to_expression(&phi.case2)
+                )
+            }
+
             Result::Ok(llvm)
         }
     }
@@ -243,7 +255,6 @@ fn generate_function_llvm(
     for instruction in &function.get_single_scope().ir {
         let word_ir = generate_instruction_llvm(instruction, context)?;
         llvm += &word_ir;
-        llvm += "\n";
     }
 
     Result::Ok(llvm)
