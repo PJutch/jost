@@ -149,19 +149,29 @@ fn compile_if(
     start: i64,
     end: i64,
 ) -> Result<(), String> {
-    lexer.consume_and_expect("(")?;
     let condition = function.pop_of_type(Type::Bool, globals, start, end, lexer)?;
 
     function.new_scope();
+    lexer.consume_and_expect("(")?;
     compile_block(lexer, function, globals, false)?;
 
-    let popped_scope = function
+    let then_scope = function
         .scopes
         .pop()
-        .expect("pop_if expects at least one scope to exist");
+        .expect("compile_if already created a then scope");
+
+    function.new_scope();
+    if lexer.try_consume("else") {
+        lexer.consume_and_expect("(")?;
+        compile_block(lexer, function, globals, false)?;
+    }
+    let else_scope = function
+        .scopes
+        .pop()
+        .expect("compile_if already created an else scope");
 
     let mut borrowed_values = Vec::new();
-    while function.top_stack_position() != popped_scope.to_borrow {
+    while function.top_stack_position() != then_scope.to_borrow {
         borrowed_values.push(
             function.pop().expect(
                 "popped_scope.to_borrow is below us in the stack so there is a value to pop",
@@ -175,7 +185,7 @@ fn compile_if(
     }
 
     let mut found_types = Vec::new();
-    for value in &popped_scope.stack {
+    for value in &then_scope.stack {
         found_types.push(ir::type_of(value, function, globals));
     }
 
@@ -192,18 +202,18 @@ fn compile_if(
     }
 
     let mut phis = Vec::new();
-    for i in 0..popped_scope.stack.len() {
+    for i in 0..then_scope.stack.len() {
         let result_var = function.new_var(expected_types[i].clone());
         function.push(Value::Variable(result_var));
         phis.push(Phi {
             result_var,
             result_type: expected_types[i].clone(),
-            case1: popped_scope.stack[i].clone(),
+            case1: then_scope.stack[i].clone(),
             case2: borrowed_values[i].clone(),
         });
     }
 
-    function.add_instruction(Instruction::If(condition, popped_scope, phis));
+    function.add_instruction(Instruction::If(condition, then_scope, else_scope, phis));
     Result::Ok(())
 }
 

@@ -17,3 +17,7 @@ print
 
 "test if touching stack" true if (dup print)
 true if (pop "test if changing stack") print
+
+true if ("test then" print) else ("test else" print)
+false if ("test then" print) else ("test else" print)
+

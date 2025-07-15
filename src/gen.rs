@@ -211,21 +211,29 @@ fn generate_instruction_llvm(
 
             Result::Ok(llvm)
         }
-        Instruction::If(condition, block, phis) => {
+        Instruction::If(condition, then_block, else_block, phis) => {
             let if_id = context.next_contol_flow();
             let mut llvm = format!(
-                "    br label %if{if_id}_start\nif{if_id}_start:\n    br i1 {}, label %if{if_id}_true, label %if{if_id}_end\nif{if_id}_true:\n",
+                "    br label %if{if_id}_start\nif{if_id}_start:\n    br i1 {}, label %if{if_id}_true, label %if{if_id}_else\n",
                 context.to_expression(condition)
             );
 
-            for instruction in &block.ir {
+            llvm += &format!("if{if_id}_true:\n");
+            for instruction in &then_block.ir {
                 llvm += &generate_instruction_llvm(instruction, context)?;
             }
-            llvm += &format!("    br label %if{if_id}_end\nif{if_id}_end:\n");
+            llvm += &format!("    br label %if{if_id}_end\n");
 
+            llvm += &format!("if{if_id}_else:\n");
+            for instruction in &else_block.ir {
+                llvm += &generate_instruction_llvm(instruction, context)?;
+            }
+            llvm += &format!("    br label %if{if_id}_end\n");
+
+            llvm += &format!("if{if_id}_end:");
             for phi in phis {
                 llvm += &format!(
-                    "    %{} = phi {} [ {}, %if{if_id}_true ], [ {}, %if{if_id}_start ]\n",
+                    "    %{} = phi {} [ {}, %if{if_id}_true ], [ {}, %if{if_id}_else ]\n",
                     context.next_var_number(phi.result_var),
                     to_llvm_type(&phi.result_type),
                     context.to_expression(&phi.case1),

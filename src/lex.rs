@@ -188,4 +188,17 @@ impl<'a, 'b> Lexer<'a, 'b> {
             ))
         }
     }
+
+    pub fn try_consume(&mut self, expected: &str) -> bool {
+        let old_current_byte = self.current_byte;
+
+        if let Some(Word::Id(id, _, _)) = self.next_word() {
+            if id == expected {
+                return true;
+            }
+        }
+
+        self.current_byte = old_current_byte;
+        false
+    }
 }

@@ -1,7 +1,7 @@
 use crate::lex::Lexer;
 
-use std::fmt::Display;
 use std::collections::HashMap;
+use std::fmt::Display;
 
 use core::panic;
 
@@ -469,6 +469,5 @@ pub enum Instruction {
     Not(Value, i64),
     Print(Value),
     Call(Value, Vec<Type>, Vec<Value>, Vec<Type>, Vec<i64>),
-    If(Value, Scope, Vec<Phi>),
+    If(Value, Scope, Scope, Vec<Phi>),
 }
-
