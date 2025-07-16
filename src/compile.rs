@@ -1,3 +1,4 @@
+use crate::ir::type_of;
 use crate::lex::Lexer;
 use crate::lex::Word;
 
@@ -11,6 +12,8 @@ use crate::ir::Phi;
 use crate::ir::Relational;
 use crate::ir::Type;
 use crate::ir::Value;
+
+use std::cmp;
 
 fn arithmetic_from_id(id: &str) -> Option<Arithemtic> {
     match id {
@@ -155,7 +158,7 @@ fn compile_if(
     lexer.consume_and_expect("(")?;
     compile_block(lexer, function, globals, false)?;
 
-    let then_scope = function
+    let mut then_scope = function
         .scopes
         .pop()
         .expect("compile_if already created a then scope");
@@ -165,51 +168,72 @@ fn compile_if(
         lexer.consume_and_expect("(")?;
         compile_block(lexer, function, globals, false)?;
     }
-    let else_scope = function
+    let mut else_scope = function
         .scopes
         .pop()
         .expect("compile_if already created an else scope");
 
-    let mut borrowed_values = Vec::new();
-    while function.top_stack_position() != then_scope.to_borrow {
-        borrowed_values.push(
-            function.pop().expect(
-                "popped_scope.to_borrow is below us in the stack so there is a value to pop",
-            ),
+    let mut then_returned = Vec::new();
+    let mut else_returned = Vec::new();
+
+    while function.top_stack_position() > cmp::min(then_scope.to_borrow, else_scope.to_borrow) {
+        let push_in_then = function.top_stack_position() <= then_scope.to_borrow;
+        let push_in_else = function.top_stack_position() <= else_scope.to_borrow;
+
+        let borrowed_value = function.pop().expect(
+            "to_borrow of one of the scopes is below us in the stack so there is a value to pop",
         );
+
+        if push_in_then {
+            then_returned.push(borrowed_value.clone());
+        }
+
+        if push_in_else {
+            else_returned.push(borrowed_value);
+        }
     }
 
-    let mut expected_types = Vec::new();
-    for value in &borrowed_values {
-        expected_types.push(ir::type_of(value, function, globals));
+    then_returned.reverse();
+    while let Some(value) = then_scope.stack.pop() {
+        then_returned.push(value);
     }
 
-    let mut found_types = Vec::new();
-    for value in &then_scope.stack {
-        found_types.push(ir::type_of(value, function, globals));
+    let then_types: Vec<Type> = then_returned
+        .iter()
+        .map(|value| type_of(value, function, globals))
+        .collect();
+
+    else_returned.reverse();
+    while let Some(value) = else_scope.stack.pop() {
+        else_returned.push(value);
     }
 
-    if expected_types != found_types {
+    let else_types: Vec<Type> = else_returned
+        .iter()
+        .map(|value| type_of(value, function, globals))
+        .collect();
+
+    if then_types != else_types {
         return Result::Err(lexer.make_error_report(
             start,
             end,
             &format!(
-                "if is expected to return {}, got {}",
-                ir::display_type_list(&expected_types),
-                ir::display_type_list(&found_types)
+                "then branch left {} on stack, but else branch left {}",
+                ir::display_type_list(&then_types),
+                ir::display_type_list(&else_types)
             ),
         ));
     }
 
     let mut phis = Vec::new();
-    for i in 0..then_scope.stack.len() {
-        let result_var = function.new_var(expected_types[i].clone());
+    for i in 0..then_returned.len() {
+        let result_var = function.new_var(then_types[i].clone());
         function.push(Value::Variable(result_var));
         phis.push(Phi {
             result_var,
-            result_type: expected_types[i].clone(),
-            case1: then_scope.stack[i].clone(),
-            case2: borrowed_values[i].clone(),
+            result_type: then_types[i].clone(),
+            case1: then_returned[i].clone(),
+            case2: else_returned[i].clone(),
         });
     }
 

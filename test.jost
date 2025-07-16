@@ -21,3 +21,8 @@ true if (pop "test if changing stack") print
 true if ("test then" print) else ("test else" print)
 false if ("test then" print) else ("test else" print)
 
+"test else touching the stack" false if ("unreachable" print) else (dup print)
+false if () else (pop "test else changing the stack")
+false if (print) else (print)
+false if ("unreachable") else ("test if-else pushing on the stack") print
+

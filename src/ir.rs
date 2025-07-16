@@ -118,7 +118,7 @@ impl Globals {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StackPosition {
     scope: usize,
     item: usize,
