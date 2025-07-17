@@ -1,4 +1,5 @@
 use crate::lex::Lexer;
+use crate::lex::Location;
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -127,9 +128,10 @@ pub struct StackPosition {
 #[derive(Debug)]
 pub struct Scope {
     pub stack: Vec<Value>,
-    pub ir: Vec<Instruction>,
-
     pub to_borrow: Option<StackPosition>,
+    pub no_return: bool,
+
+    pub ir: Vec<Instruction>,
 
     pub end: i64,
 }
@@ -202,8 +204,9 @@ impl Function {
     pub fn new_scope(&mut self) {
         self.scopes.push(Scope {
             stack: Vec::new(),
-            ir: Vec::new(),
             to_borrow: self.top_stack_position(),
+            no_return: false,
+            ir: Vec::new(),
             end: 0,
         });
     }
@@ -225,6 +228,20 @@ impl Function {
             print!("{:?} ", scope.to_borrow);
         }
         println!();
+    }
+
+    pub fn mark_no_return(&mut self) {
+        self.scopes
+            .last_mut()
+            .expect("no_return expects at least one scope to exist")
+            .no_return = true;
+    }
+
+    pub fn is_no_return(&self) -> bool {
+        self.scopes
+            .last()
+            .expect("no_return expects at least one scope to exist")
+            .no_return
     }
 
     pub fn push(&mut self, value: Value) {
@@ -286,8 +303,7 @@ impl Function {
         &mut self,
         type_: Type,
         globals: &Globals,
-        start: i64,
-        end: i64,
+        location: Location,
         lexer: &Lexer,
     ) -> Result<Value, String> {
         if let Some(pos) = self.top_stack_position() {
@@ -298,8 +314,7 @@ impl Function {
         }
 
         Result::Err(lexer.make_error_report(
-            start,
-            end,
+            location,
             &format!(
                 "expected ... {type_}, found {}",
                 self.stack_as_string(globals)
@@ -312,8 +327,7 @@ impl Function {
         type1: Type,
         type2: Type,
         globals: &Globals,
-        start: i64,
-        end: i64,
+        location: Location,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
         if let Some(pos2) = self.top_stack_position() {
@@ -329,8 +343,7 @@ impl Function {
         }
 
         Result::Err(lexer.make_error_report(
-            start,
-            end,
+            location,
             &format!(
                 "expected ... {type1} {type2}, found {}",
                 self.stack_as_string(globals)
@@ -360,8 +373,7 @@ impl Function {
     pub fn pop_of_any_type(
         &mut self,
         globals: &Globals,
-        start: i64,
-        end: i64,
+        location: Location,
         lexer: &Lexer,
     ) -> Result<Value, String> {
         if let Some(value) = self.pop() {
@@ -369,8 +381,7 @@ impl Function {
         }
 
         Result::Err(lexer.make_error_report(
-            start,
-            end,
+            location,
             &format!("expected ... A, found {}", self.stack_as_string(globals)),
         ))
     }
@@ -378,8 +389,7 @@ impl Function {
     pub fn pop2_of_any_type(
         &mut self,
         globals: &Globals,
-        start: i64,
-        end: i64,
+        location: Location,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
         if let Some(pos) = self.top_stack_position() {
@@ -391,8 +401,7 @@ impl Function {
         }
 
         Result::Err(lexer.make_error_report(
-            start,
-            end,
+            location,
             &format!("expected ... A A, found {}", self.stack_as_string(globals)),
         ))
     }
@@ -468,6 +477,7 @@ pub enum Instruction {
     Logical(Logical, Value, Value, i64),
     Not(Value, i64),
     Print(Value),
+    Exit(Value),
     Call(Value, Vec<Type>, Vec<Value>, Vec<Type>, Vec<i64>),
     If(Value, Scope, Scope, Vec<Phi>),
 }

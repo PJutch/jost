@@ -26,3 +26,5 @@ false if () else (pop "test else changing the stack")
 false if (print) else (print)
 false if ("unreachable") else ("test if-else pushing on the stack") print
 
+false if (1 exit "prevent unreachable case from causing type errors") else ("test unreachable case not causing type errors")
+

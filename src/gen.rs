@@ -161,9 +161,16 @@ fn generate_instruction_llvm(
             ))
         }
         Instruction::Print(value) => {
-            context.next_var_number(-1);
+            let var_number = context.next_var_number_anonymous();
             Result::Ok(format!(
-                "    call i32 @puts(ptr {})\n",
+                "    %{var_number} = call i32 @puts(ptr {})\n",
+                context.to_expression(value)
+            ))
+        }
+        Instruction::Exit(value) => {
+            context.next_var_number_anonymous();
+            Result::Ok(format!(
+                "    call void @exit(i32 {})\n    unreachable\n",
                 context.to_expression(value)
             ))
         }
@@ -230,7 +237,7 @@ fn generate_instruction_llvm(
             }
             llvm += &format!("    br label %if{if_id}_end\n");
 
-            llvm += &format!("if{if_id}_end:");
+            llvm += &format!("if{if_id}_end:\n");
             for phi in phis {
                 llvm += &format!(
                     "    %{} = phi {} [ {}, %if{if_id}_true ], [ {}, %if{if_id}_else ]\n",
@@ -349,5 +356,6 @@ pub fn generate_llvm(
     llvm += "\n";
 
     llvm += "declare i32 @puts(ptr)\n";
+    llvm += "declare void @exit(i32) noreturn\n";
     Result::Ok(llvm)
 }

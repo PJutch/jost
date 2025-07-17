@@ -170,7 +170,16 @@ fn do_work() -> Result<(), Box<dyn Error>> {
 
     if run {
         let abs_output_path = fs::canonicalize(&output_file)?;
-        Command::new(&abs_output_path).status()?;
+        let status = Command::new(&abs_output_path).status()?;
+        if !status.success() {
+            return Result::Err(Box::from(format!(
+                "compiled program failed with exit code {}",
+                status
+                    .code()
+                    .map(|exit_code| exit_code.to_string())
+                    .unwrap_or("none".to_owned())
+            )));
+        }
     }
 
     Result::Ok(())
