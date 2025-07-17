@@ -1,3 +1,4 @@
+use crate::ir::display_type_list;
 use crate::ir::type_of;
 
 use crate::lex::Lexer;
@@ -194,42 +195,54 @@ fn compile_if(
         then_returned.push(value);
     }
 
-    let then_types: Vec<Type> = then_returned
-        .iter()
-        .map(|value| type_of(value, function, globals))
-        .collect();
-
     else_returned.reverse();
     while let Some(value) = else_scope.stack.pop() {
         else_returned.push(value);
     }
 
-    let else_types: Vec<Type> = else_returned
-        .iter()
-        .map(|value| type_of(value, function, globals))
-        .collect();
-
-    if then_types != else_types {
-        return Result::Err(lexer.make_error_report(
-            location,
-            &format!(
-                "then branch left {} on stack, but else branch left {}",
-                ir::display_type_list(&then_types),
-                ir::display_type_list(&else_types)
-            ),
-        ));
-    }
-
     let mut phis = Vec::new();
-    for i in 0..then_returned.len() {
-        let result_var = function.new_var(then_types[i].clone());
-        function.push(Value::Variable(result_var));
-        phis.push(Phi {
-            result_var,
-            result_type: then_types[i].clone(),
-            case1: then_returned[i].clone(),
-            case2: else_returned[i].clone(),
-        });
+    if !then_scope.no_return && !else_scope.no_return {
+        let then_types: Vec<Type> = then_returned
+            .iter()
+            .map(|value| type_of(value, function, globals))
+            .collect();
+
+        let else_types: Vec<Type> = else_returned
+            .iter()
+            .map(|value| type_of(value, function, globals))
+            .collect();
+
+        if then_types != else_types {
+            return Result::Err(lexer.make_error_report(
+                location,
+                &format!(
+                    "then branch left {} on stack, but else branch left {}",
+                    ir::display_type_list(&then_types),
+                    ir::display_type_list(&else_types)
+                ),
+            ));
+        }
+
+        for i in 0..then_returned.len() {
+            let result_var = function.new_var(then_types[i].clone());
+            function.push(Value::Variable(result_var));
+            phis.push(Phi {
+                result_var,
+                result_type: then_types[i].clone(),
+                case1: then_returned[i].clone(),
+                case2: else_returned[i].clone(),
+            });
+        }
+    } else if !then_scope.no_return {
+        for value in then_returned {
+            function.push(value);
+        }
+    } else if !else_scope.no_return {
+        for value in else_returned {
+            function.push(value);
+        }
+    } else {
+        function.mark_no_return();
     }
 
     function.add_instruction(Instruction::If(condition, then_scope, else_scope, phis));
@@ -244,6 +257,10 @@ fn compile_block(
 ) -> Result<(), String> {
     let mut last_pos = 0;
     while let Some((word, location)) = lexer.next_word() {
+        if function.is_no_return() && word != Word::Id(")") {
+            return Result::Err(lexer.make_error_report(location, "unreachable code"));
+        }
+
         match word {
             Word::Int(value) => {
                 function.push(Value::IntLiteral(value));
@@ -331,8 +348,29 @@ fn compile_block(
                 function.add_instruction(Instruction::Print(value));
             }
             Word::Id("exit") => {
-                let value = function.pop_of_type(Type::Int, globals, location, lexer)?;
-                function.add_instruction(Instruction::Exit(value));
+                let mut stack = Vec::new();
+                while let Some(value) = function.pop() {
+                    stack.push(value);
+                }
+                stack.reverse();
+
+                let types: Vec<Type> = stack
+                    .iter()
+                    .map(|value| type_of(value, function, globals))
+                    .collect();
+                if types != [Type::Int] {
+                    return Result::Err(format!(
+                        "exit expects stack to be clean except single Int, found {}",
+                        display_type_list(&types)
+                    ));
+                }
+
+                function.add_instruction(Instruction::Exit(
+                    stack
+                        .last()
+                        .expect("stack is checked above to have an Int")
+                        .clone(),
+                ));
                 function.mark_no_return();
             }
             Word::Id("[]") => {
