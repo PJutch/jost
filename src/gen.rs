@@ -250,6 +250,7 @@ fn generate_instruction_llvm(
 
             Result::Ok(llvm)
         }
+        Instruction::Loop(_, _) => todo!("implement loop"),
     }
 }
 

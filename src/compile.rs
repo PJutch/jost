@@ -67,16 +67,26 @@ fn compile_call(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(pos) = current_function.top_stack_position() {
-        let fn_ptr = current_function.at_stack_position(pos);
-        if let Type::FnPtr(arg_types, result_types) = ir::type_of(fn_ptr, current_function, globals)
+    if let Some(fn_ptr) = current_function.nth_from_top(0, globals) {
+        if let Type::FnPtr(arg_types, result_types) =
+            ir::type_of(&fn_ptr, current_function, globals)
         {
-            if current_function.has_given_types_after(&arg_types, pos, globals) {
-                let fn_ptr = current_function.pop().expect("stack len is checked above");
+            if arg_types.iter().enumerate().all(|(i, arg_type)| {
+                current_function
+                    .nth_from_top((arg_types.len() - i) as i64, globals)
+                    .is_some_and(|value| type_of(&value, current_function, globals) == *arg_type)
+            }) {
+                let fn_ptr = current_function
+                    .pop(globals)
+                    .expect("stack len is checked above");
 
                 let mut args = Vec::new();
                 for _ in 0..arg_types.len() {
-                    args.push(current_function.pop().expect("stack len is checked above"));
+                    args.push(
+                        current_function
+                            .pop(globals)
+                            .expect("stack len is checked above"),
+                    );
                 }
                 args.reverse();
 
@@ -102,7 +112,7 @@ fn compile_call(
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected ... fn, found {}",
+            "expected ... args fn, found {}",
             current_function.stack_as_string(globals)
         ),
     ))
@@ -114,23 +124,19 @@ fn do_type_assertion(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(type_pos) = function.top_stack_position() {
-        if let Some(value_pos) = function.decrement_stack_position(type_pos) {
-            if let Value::Type(type_) = function.at_stack_position(type_pos) {
-                let type_ = type_.clone();
-
-                if ir::type_of(function.at_stack_position(value_pos), function, globals) != type_ {
-                    return Result::Err(lexer.make_error_report(
-                        location,
-                        &format!(
-                            "expected ... {type_}, found {}",
-                            function.stack_as_string(globals)
-                        ),
-                    ));
-                }
-                function.pop();
-                return Result::Ok(());
+    if let Some(Value::Type(type_)) = function.nth_from_top(0, globals) {
+        if let Some(value) = function.nth_from_top(1, globals) {
+            if ir::type_of(&value, function, globals) != type_ {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!(
+                        "expected ... {type_}, found {}",
+                        function.stack_as_string(globals)
+                    ),
+                ));
             }
+            function.pop(globals);
+            return Result::Ok(());
         }
     }
 
@@ -151,7 +157,7 @@ fn compile_if(
 ) -> Result<(), String> {
     let condition = function.pop_of_type(Type::Bool, globals, location, lexer)?;
 
-    function.new_scope();
+    function.new_scope(false);
     lexer.consume_and_expect("(")?;
     compile_block(lexer, function, globals, false)?;
 
@@ -160,7 +166,7 @@ fn compile_if(
         .pop()
         .expect("compile_if already created a then scope");
 
-    function.new_scope();
+    function.new_scope(false);
     if lexer.try_consume("else") {
         lexer.consume_and_expect("(")?;
         compile_block(lexer, function, globals, false)?;
@@ -173,11 +179,11 @@ fn compile_if(
     let mut then_returned = Vec::new();
     let mut else_returned = Vec::new();
 
-    while function.top_stack_position() > cmp::min(then_scope.to_borrow, else_scope.to_borrow) {
-        let push_in_then = function.top_stack_position() <= then_scope.to_borrow;
-        let push_in_else = function.top_stack_position() <= else_scope.to_borrow;
+    for i in 0..cmp::max(then_scope.n_borrowed, else_scope.n_borrowed) {
+        let push_in_then = i >= then_scope.n_borrowed;
+        let push_in_else = i >= else_scope.n_borrowed;
 
-        let borrowed_value = function.pop().expect(
+        let borrowed_value = function.pop(globals).expect(
             "to_borrow of one of the scopes is below us in the stack so there is a value to pop",
         );
 
@@ -246,6 +252,20 @@ fn compile_if(
     }
 
     function.add_instruction(Instruction::If(condition, then_scope, else_scope, phis));
+    Result::Ok(())
+}
+
+fn compile_loop(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    location: Location,
+) -> Result<(), String> {
+    function.new_scope(true);
+    lexer.consume_and_expect("(")?;
+    compile_block(lexer, function, globals, false)?;
+    let loop_scope = function.scopes.pop().expect("scope was created above");
+
     Result::Ok(())
 }
 
@@ -349,7 +369,7 @@ fn compile_block(
             }
             Word::Id("exit") => {
                 let mut stack = Vec::new();
-                while let Some(value) = function.pop() {
+                while let Some(value) = function.pop(globals) {
                     stack.push(value);
                 }
                 stack.reverse();
@@ -393,6 +413,7 @@ fn compile_block(
             Word::Id(")") => break,
             Word::Id("call") => compile_call(function, globals, lexer, location)?,
             Word::Id("if") => compile_if(function, globals, lexer, location)?,
+            Word::Id("loop") => compile_loop(function, globals, lexer, location)?,
             Word::Id("fn") => {
                 lexer.consume_and_expect("(")?;
 
@@ -438,20 +459,6 @@ fn compile_block(
         ));
     }
 
-    if !function.has_given_types_after(
-        &function.result_types,
-        function.over_top_stack_position(),
-        globals,
-    ) {
-        return Result::Err(lexer.make_error_report(
-            Location::char_at(last_pos),
-            &format!(
-                "expected ... {}, found {}",
-                ir::display_type_list(&function.result_types),
-                function.stack_as_string(globals)
-            ),
-        ));
-    }
     Result::Ok(())
 }
 
@@ -464,6 +471,24 @@ fn compile_function(
 ) -> Result<Function, String> {
     let mut function = Function::new(arg_types, result_types);
     compile_block(lexer, &mut function, globals, consume_all)?;
+
+    let returned_types: Vec<Type> = function
+        .get_single_scope()
+        .stack
+        .iter()
+        .map(|value| type_of(value, &function, globals))
+        .collect();
+    if returned_types != function.result_types {
+        return Result::Err(lexer.make_error_report(
+            Location::char_at(function.get_single_scope().end),
+            &format!(
+                "expected {}, found {}",
+                ir::display_type_list(&function.result_types),
+                function.stack_as_string(globals)
+            ),
+        ));
+    }
+
     Result::Ok(function)
 }
 

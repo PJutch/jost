@@ -1,6 +1,7 @@
 use crate::lex::Lexer;
 use crate::lex::Location;
 
+use std::collections::btree_map::Values;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -119,17 +120,15 @@ impl Globals {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StackPosition {
-    scope: usize,
-    item: usize,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Scope {
     pub stack: Vec<Value>,
-    pub to_borrow: Option<StackPosition>,
     pub no_return: bool,
+
+    pub n_borrowed: i64,
+
+    create_borrowed_vars: bool,
+    borrowed_vars: HashMap<i64, (i64, Value)>,
 
     pub ir: Vec<Instruction>,
 
@@ -158,7 +157,7 @@ impl Function {
             result_types,
         };
 
-        function.new_scope();
+        function.new_scope(false);
 
         for i in 0..n_args {
             function.push(Value::Arg(i as i64));
@@ -167,45 +166,72 @@ impl Function {
         function
     }
 
-    pub fn over_top_stack_position(&self) -> StackPosition {
-        StackPosition {
-            scope: self.scopes.len(),
-            item: 0,
+    // this will create borrowed_vars automatically
+    pub fn nth_from_top(&mut self, n: i64, globals: &Globals) -> Option<Value> {
+        self.nth_from_top_impl(n as usize, self.scopes.len() - 1, globals)
+    }
+
+    fn create_borrowed_var(
+        &mut self,
+        scope_index: usize,
+        borrowed_var_index: usize,
+        value: Value,
+        globals: &Globals,
+    ) -> i64 {
+        let var = self.new_var(type_of(&value, self, globals));
+        self.scopes[scope_index]
+            .borrowed_vars
+            .insert(borrowed_var_index as i64, (var, value.clone()));
+        var
+    }
+
+    pub fn nth_from_top_impl(
+        &mut self,
+        n: usize,
+        current_scope_index: usize,
+        globals: &Globals,
+    ) -> Option<Value> {
+        let current_scope = self.scopes.get_mut(current_scope_index)?;
+        if n < current_scope.stack.len() {
+            return Option::Some(current_scope.stack[current_scope.stack.len() - n - 1].clone());
         }
-    }
 
-    pub fn top_stack_position(&self) -> Option<StackPosition> {
-        self.decrement_stack_position(self.over_top_stack_position())
-    }
-
-    pub fn decrement_stack_position(&self, mut pos: StackPosition) -> Option<StackPosition> {
-        while pos.item == 0 && pos.scope > 0 {
-            if let Some(scope) = self.scopes.get(pos.scope) {
-                pos = scope.to_borrow?;
-                pos.item += 1;
-            } else {
-                pos.scope -= 1;
-                pos.item = self.scopes[pos.scope].stack.len();
+        let next_n = n - current_scope.stack.len() + current_scope.n_borrowed as usize;
+        if current_scope.create_borrowed_vars {
+            if let Some((_, value)) = current_scope.borrowed_vars.get(&(next_n as i64)) {
+                return Option::Some(value.clone());
             }
         }
 
-        if pos.item != 0 {
-            pos.item -= 1;
-            Option::Some(pos)
+        let value = if current_scope_index > 0 {
+            self.nth_from_top_impl(next_n, current_scope_index - 1, globals)?
         } else {
-            Option::None
+            return Option::None;
+        };
+
+        if self
+            .scopes
+            .get_mut(current_scope_index)?
+            .create_borrowed_vars
+        {
+            Option::Some(Value::Variable(self.create_borrowed_var(
+                current_scope_index,
+                next_n,
+                value,
+                globals,
+            )))
+        } else {
+            Option::Some(value)
         }
     }
 
-    pub fn at_stack_position(&self, pos: StackPosition) -> &Value {
-        &self.scopes[pos.scope].stack[pos.item]
-    }
-
-    pub fn new_scope(&mut self) {
+    pub fn new_scope(&mut self, create_borrowed_vars: bool) {
         self.scopes.push(Scope {
             stack: Vec::new(),
-            to_borrow: self.top_stack_position(),
+            n_borrowed: 0,
             no_return: false,
+            create_borrowed_vars,
+            borrowed_vars: HashMap::new(),
             ir: Vec::new(),
             end: 0,
         });
@@ -221,13 +247,6 @@ impl Function {
         self.scopes
             .first()
             .expect("get_single_scope expects function to have a scope")
-    }
-
-    fn print_to_borrow(&self) {
-        for scope in &self.scopes {
-            print!("{:?} ", scope.to_borrow);
-        }
-        println!();
     }
 
     pub fn mark_no_return(&mut self) {
@@ -252,23 +271,45 @@ impl Function {
             .push(value);
     }
 
-    pub fn pop(&mut self) -> Option<Value> {
-        if let Some(last_scope) = self.scopes.last_mut() {
-            if let Some(value) = last_scope.stack.pop() {
-                return Option::Some(value);
+    pub fn pop(&mut self, globals: &Globals) -> Option<Value> {
+        if let Some(value) = self.scopes.last_mut()?.stack.pop() {
+            return Option::Some(value);
+        }
+
+        let value = self.nth_from_top(0, globals)?;
+        self.scopes.last_mut()?.n_borrowed += 1;
+        Option::Some(value)
+    }
+
+    fn whole_stack(&mut self, globals: &Globals) -> Vec<Value> {
+        let mut result: Vec<Value> = Vec::new();
+        for (scope_index, scope) in self.scopes.clone().iter().enumerate() {
+            for _ in 0..scope.n_borrowed {
+                result.pop();
             }
 
-            last_scope.to_borrow.map(|pos| {
-                let result = self.at_stack_position(pos).clone();
-                self.scopes
-                    .last_mut()
-                    .expect("scope existing is checked above")
-                    .to_borrow = self.decrement_stack_position(pos);
-                result
-            })
-        } else {
-            Option::None
+            if scope.create_borrowed_vars {
+                let mut new_result = Vec::new();
+                for (item_index, value) in result.iter().rev().enumerate() {
+                    if let Some((_, new_value)) = scope.borrowed_vars.get(&(item_index as i64)) {
+                        new_result.push(new_value.clone());
+                    } else {
+                        new_result.push(Value::Variable(self.create_borrowed_var(
+                            scope_index,
+                            item_index,
+                            value.clone(),
+                            globals,
+                        )));
+                    }
+                }
+                result = new_result;
+            }
+
+            for value in &scope.stack {
+                result.push(value.clone());
+            }
         }
+        result
     }
 
     pub fn add_instruction(&mut self, instruction: Instruction) {
@@ -285,17 +326,11 @@ impl Function {
         self.last_var
     }
 
-    pub fn stack_as_string(&self, globals: &Globals) -> String {
+    pub fn stack_as_string(&mut self, globals: &Globals) -> String {
         let mut types = Vec::new();
-
-        let mut pos = self.over_top_stack_position();
-        while let Some(new_pos) = self.decrement_stack_position(pos) {
-            pos = new_pos;
-            types.push(type_of(self.at_stack_position(pos), self, globals));
+        for value in self.whole_stack(globals) {
+            types.push(type_of(&value, self, globals));
         }
-
-        types.reverse();
-
         display_type_list(&types)
     }
 
@@ -306,10 +341,9 @@ impl Function {
         location: Location,
         lexer: &Lexer,
     ) -> Result<Value, String> {
-        if let Some(pos) = self.top_stack_position() {
-            let value = self.at_stack_position(pos);
-            if type_of(value, self, globals) == type_ {
-                return Result::Ok(self.pop().expect("stack is checked to not be empty"));
+        if let Some(value) = self.nth_from_top(0, globals) {
+            if type_of(&value, self, globals) == type_ {
+                return Result::Ok(self.pop(globals).expect("stack is checked to not be empty"));
             }
         }
 
@@ -330,13 +364,17 @@ impl Function {
         location: Location,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
-        if let Some(pos2) = self.top_stack_position() {
-            if let Some(pos1) = self.decrement_stack_position(pos2) {
-                if type_of(self.at_stack_position(pos1), self, globals) == type1
-                    && type_of(self.at_stack_position(pos2), self, globals) == type2
+        if let Some(value1) = self.nth_from_top(1, globals) {
+            if let Some(value2) = self.nth_from_top(0, globals) {
+                if type_of(&value1, self, globals) == type1
+                    && type_of(&value2, self, globals) == type2
                 {
-                    let value2 = self.pop().expect("stack is checked to have 2 values");
-                    let value1 = self.pop().expect("stack is checked to have 2 values");
+                    let value2 = self
+                        .pop(globals)
+                        .expect("stack is checked to have 2 values");
+                    let value1 = self
+                        .pop(globals)
+                        .expect("stack is checked to have 2 values");
                     return Result::Ok((value1, value2));
                 }
             }
@@ -351,32 +389,13 @@ impl Function {
         ))
     }
 
-    pub fn has_given_types_after(
-        &self,
-        types: &[Type],
-        mut pos: StackPosition,
-        globals: &Globals,
-    ) -> bool {
-        for type_ in types.iter().rev() {
-            if let Some(new_pos) = self.decrement_stack_position(pos) {
-                pos = new_pos;
-                if type_of(self.at_stack_position(pos), self, globals) == *type_ {
-                    continue;
-                }
-            }
-
-            return false;
-        }
-        true
-    }
-
     pub fn pop_of_any_type(
         &mut self,
         globals: &Globals,
         location: Location,
         lexer: &Lexer,
     ) -> Result<Value, String> {
-        if let Some(value) = self.pop() {
+        if let Some(value) = self.pop(globals) {
             return Result::Ok(value);
         }
 
@@ -392,12 +411,14 @@ impl Function {
         location: Location,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
-        if let Some(pos) = self.top_stack_position() {
-            if self.decrement_stack_position(pos).is_some() {
-                let value2 = self.pop().expect("stack is checked to have 2 values");
-                let value1 = self.pop().expect("stack is checked to have 2 values");
-                return Result::Ok((value1, value2));
-            }
+        if self.nth_from_top(0, globals).is_some() && self.nth_from_top(1, globals).is_some() {
+            let value2 = self
+                .pop(globals)
+                .expect("stack is checked to have 2 values");
+            let value1 = self
+                .pop(globals)
+                .expect("stack is checked to have 2 values");
+            return Result::Ok((value1, value2));
         }
 
         Result::Err(lexer.make_error_report(
@@ -456,13 +477,13 @@ pub enum Relational {
     Ge,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Logical {
     And,
     Or,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Phi {
     pub result_var: i64,
     pub result_type: Type,
@@ -470,7 +491,7 @@ pub struct Phi {
     pub case2: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Instruction {
     Arithemtic(Arithemtic, Value, Value, i64),
     Relational(Relational, Value, Value, i64),
@@ -480,4 +501,5 @@ pub enum Instruction {
     Exit(Value),
     Call(Value, Vec<Type>, Vec<Value>, Vec<Type>, Vec<i64>),
     If(Value, Scope, Scope, Vec<Phi>),
+    Loop(Vec<Phi>, Scope),
 }
