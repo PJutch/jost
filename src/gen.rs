@@ -78,10 +78,10 @@ pub fn llvm_relational(op: Relational) -> &'static str {
     match op {
         Relational::Eq => "eq",
         Relational::Ne => "ne",
-        Relational::Lt => "lt",
-        Relational::Le => "le",
-        Relational::Gt => "gt",
-        Relational::Ge => "ge",
+        Relational::Lt => "slt",
+        Relational::Le => "sle",
+        Relational::Gt => "sgt",
+        Relational::Ge => "sge",
     }
 }
 
@@ -160,12 +160,26 @@ fn generate_instruction_llvm(
                 context.to_expression(value)
             ))
         }
-        Instruction::Print(value) => {
+        Instruction::Putstr(value) => {
             let var_number = context.next_var_number_anonymous();
             Result::Ok(format!(
                 "    %{var_number} = call i32 @puts(ptr {})\n",
                 context.to_expression(value)
             ))
+        }
+        Instruction::Printf(format_string, args) => {
+            let var_number = context.next_var_number_anonymous();
+            let mut llvm = "    %".to_owned();
+            llvm += &var_number.to_string();
+            llvm += " = call i32 @printf(ptr ";
+            llvm += &context.to_expression(format_string);
+            for arg in args {
+                // TODO: support argument types other than Int
+                llvm += ", i64 ";
+                llvm += &context.to_expression(arg);
+            }
+            llvm += ")\n";
+            Result::Ok(llvm)
         }
         Instruction::Exit(value) => {
             context.next_var_number_anonymous();
@@ -250,7 +264,71 @@ fn generate_instruction_llvm(
 
             Result::Ok(llvm)
         }
-        Instruction::Loop(_, _) => todo!("implement loop"),
+        Instruction::Loop(phis, body_scope) => {
+            let loop_id = context.next_contol_flow();
+            let mut llvm = format!("    br label %loop{loop_id}_start\nloop{loop_id}_start:\n    br label %loop{loop_id}_body\nloop{loop_id}_body:\n");
+
+            let phi_var_numbers: Vec<i64> = phis
+                .iter()
+                .map(|phi| context.next_var_number(phi.result_var))
+                .collect();
+
+            let mut body_llvm = String::new();
+            for instruction in &body_scope.ir {
+                body_llvm += &generate_instruction_llvm(instruction, context)?;
+            }
+
+            for (i, phi) in phis.iter().enumerate() {
+                llvm += &format!(
+                    "    %{} = phi {} [ {}, %loop{loop_id}_start ], [ {}, %loop{loop_id}_back ]\n",
+                    phi_var_numbers[i],
+                    to_llvm_type(&phi.result_type),
+                    context.to_expression(&phi.case1),
+                    context.to_expression(&phi.case2)
+                );
+            }
+
+            llvm += &body_llvm;
+
+            llvm += &format!("    br label %loop{loop_id}_back\nloop{loop_id}_back:\n    br label %loop{loop_id}_body\n");
+            Result::Ok(llvm)
+        }
+        Instruction::While(phis, test_scope, test, body_scope) => {
+            let while_id = context.next_contol_flow();
+            let mut llvm = format!("    br label %while{while_id}_start\nwhile{while_id}_start:\n    br label %while{while_id}_test\nwhile{while_id}_test:\n");
+
+            let mut phi_var_numbers = Vec::new();
+            for phi in phis {
+                phi_var_numbers.push(context.next_var_number(phi.result_var));
+            }
+
+            let mut test_llvm = String::new();
+            for instruction in &test_scope.ir {
+                test_llvm += &generate_instruction_llvm(instruction, context)?;
+            }
+
+            let mut body_llvm = String::new();
+            for instruction in &body_scope.ir {
+                body_llvm += &generate_instruction_llvm(instruction, context)?;
+            }
+
+            for (i, phi) in phis.iter().enumerate() {
+                llvm += &format!(
+                    "    %{} = phi {} [ {}, %while{while_id}_start ], [ {}, %while{while_id}_back ]\n",
+                    phi_var_numbers[i],
+                    to_llvm_type(&phi.result_type),
+                    context.to_expression(&phi.case1),
+                    context.to_expression(&phi.case2)
+                )
+            }
+
+            llvm += &test_llvm;
+            llvm += &format!("    br i1 {}, label %while{while_id}_body, label %while{while_id}_end\nwhile{while_id}_body:\n", context.to_expression(test));
+            llvm += &body_llvm;
+            llvm += &format!("    br label %while{while_id}_back\nwhile{while_id}_back:\n    br label %while{while_id}_test\nwhile{while_id}_end:");
+
+            Result::Ok(llvm)
+        }
     }
 }
 
@@ -301,7 +379,7 @@ fn generate_returns(function: &Function, context: &mut GenerationContext) -> Str
     let result_values = &function.get_single_scope().stack;
     let returned_type = to_llvm_type_multiple(&function.result_types);
     if result_values.len() > 1 {
-        let mut result = "".to_owned();
+        let mut result = String::new();
         let mut current_struct = "undef".to_owned();
         for (i, value) in result_values.iter().enumerate() {
             let var_number = context.next_var_number_anonymous();
@@ -358,5 +436,6 @@ pub fn generate_llvm(
 
     llvm += "declare i32 @puts(ptr)\n";
     llvm += "declare void @exit(i32) noreturn\n";
+    llvm += "declare i32 @printf(ptr, ...)\n";
     Result::Ok(llvm)
 }

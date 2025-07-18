@@ -1,7 +1,6 @@
 use crate::lex::Lexer;
 use crate::lex::Location;
 
-use std::collections::btree_map::Values;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -128,7 +127,7 @@ pub struct Scope {
     pub n_borrowed: i64,
 
     create_borrowed_vars: bool,
-    borrowed_vars: HashMap<i64, (i64, Value)>,
+    pub borrowed_vars: HashMap<i64, (i64, Value)>,
 
     pub ir: Vec<Instruction>,
 
@@ -198,8 +197,8 @@ impl Function {
 
         let next_n = n - current_scope.stack.len() + current_scope.n_borrowed as usize;
         if current_scope.create_borrowed_vars {
-            if let Some((_, value)) = current_scope.borrowed_vars.get(&(next_n as i64)) {
-                return Option::Some(value.clone());
+            if let Some((var, _)) = current_scope.borrowed_vars.get(&(next_n as i64)) {
+                return Option::Some(Value::Variable(*var));
             }
         }
 
@@ -426,6 +425,37 @@ impl Function {
             &format!("expected ... A A, found {}", self.stack_as_string(globals)),
         ))
     }
+
+    pub fn pop3_of_any_type(
+        &mut self,
+        globals: &Globals,
+        location: Location,
+        lexer: &Lexer,
+    ) -> Result<[Value; 3], String> {
+        if self.nth_from_top(0, globals).is_some()
+            && self.nth_from_top(1, globals).is_some()
+            && self.nth_from_top(2, globals).is_some()
+        {
+            let value3 = self
+                .pop(globals)
+                .expect("stack is checked to have 3 values");
+            let value2 = self
+                .pop(globals)
+                .expect("stack is checked to have 3 values");
+            let value1 = self
+                .pop(globals)
+                .expect("stack is checked to have 3 values");
+            return Result::Ok([value1, value2, value3]);
+        }
+
+        Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "expected ... A A A, found {}",
+                self.stack_as_string(globals)
+            ),
+        ))
+    }
 }
 
 fn print_function_ir(function: &Function) {
@@ -497,9 +527,11 @@ pub enum Instruction {
     Relational(Relational, Value, Value, i64),
     Logical(Logical, Value, Value, i64),
     Not(Value, i64),
-    Print(Value),
+    Putstr(Value),
+    Printf(Value, Vec<Value>),
     Exit(Value),
     Call(Value, Vec<Type>, Vec<Value>, Vec<Type>, Vec<i64>),
     If(Value, Scope, Scope, Vec<Phi>),
     Loop(Vec<Phi>, Scope),
+    While(Vec<Phi>, Scope, Value, Scope),
 }

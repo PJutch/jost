@@ -17,6 +17,7 @@ use crate::ir::Type;
 use crate::ir::Value;
 
 use std::cmp;
+use std::mem;
 
 fn arithmetic_from_id(id: &str) -> Option<Arithemtic> {
     match id {
@@ -264,7 +265,130 @@ fn compile_loop(
     function.new_scope(true);
     lexer.consume_and_expect("(")?;
     compile_block(lexer, function, globals, false)?;
-    let loop_scope = function.scopes.pop().expect("scope was created above");
+    let mut body_scope = function.scopes.pop().expect("scope was created above");
+
+    let expected_types: Vec<Type> = (0..body_scope.n_borrowed)
+        .map(|i| type_of(&body_scope.borrowed_vars[&i].1, function, globals))
+        .collect();
+
+    let actual_types: Vec<Type> = body_scope
+        .stack
+        .iter()
+        .map(|value| type_of(value, function, globals))
+        .collect();
+
+    if expected_types != actual_types {
+        return Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "loop body consumed {}, but returned {}",
+                display_type_list(&expected_types),
+                display_type_list(&actual_types)
+            ),
+        ));
+    }
+
+    let mut phis = Vec::new();
+    for (i, (var, value)) in mem::take(&mut body_scope.borrowed_vars) {
+        let i = i as usize;
+        phis.push(Phi {
+            result_var: var,
+            result_type: type_of(&value, function, globals),
+            case1: value,
+            case2: if i < body_scope.stack.len() {
+                body_scope.stack[body_scope.stack.len() - i - 1].clone()
+            } else {
+                Value::Variable(var)
+            },
+        });
+    }
+
+    function.add_instruction(Instruction::Loop(phis, body_scope));
+
+    function.mark_no_return();
+
+    Result::Ok(())
+}
+
+fn compile_while(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    location: Location,
+) -> Result<(), String> {
+    function.new_scope(true);
+    lexer.consume_and_expect("(")?;
+    compile_block(lexer, function, globals, false)?;
+
+    let test = function.pop_of_type(
+        Type::Bool,
+        globals,
+        Location::char_at(function.scopes.last().expect("scope was created above").end),
+        lexer,
+    )?;
+
+    function.new_scope(false);
+    lexer.consume_and_expect("(")?;
+    compile_block(lexer, function, globals, false)?;
+
+    let body_scope = function.scopes.pop().expect("scopes were created above");
+    let mut test_scope = function.scopes.pop().expect("scopes were created above");
+
+    let n_borrowed = body_scope.n_borrowed + test_scope.n_borrowed - test_scope.stack.len() as i64;
+
+    let expected_types: Vec<Type> = (0..n_borrowed)
+        .map(|i| type_of(&test_scope.borrowed_vars[&i].1, function, globals))
+        .collect();
+
+    let actual_types: Vec<Type> = test_scope
+        .stack
+        .iter()
+        .map(|value| type_of(value, function, globals))
+        .collect();
+
+    if expected_types != actual_types {
+        return Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "loop body consumed {}, but returned {}",
+                display_type_list(&expected_types),
+                display_type_list(&actual_types)
+            ),
+        ));
+    }
+
+    let mut phis = Vec::new();
+    for (i, (var, value)) in mem::take(&mut test_scope.borrowed_vars) {
+        let i = i as usize;
+        phis.push(Phi {
+            result_var: var,
+            result_type: type_of(&value, function, globals),
+            case1: value,
+            case2: if i < body_scope.stack.len() {
+                body_scope.stack[body_scope.stack.len() - i - 1].clone()
+            } else if i < body_scope.stack.len() + test_scope.stack.len()
+                - body_scope.n_borrowed as usize
+            {
+                test_scope.stack[test_scope.stack.len() + body_scope.stack.len()
+                    - body_scope.n_borrowed as usize
+                    - i
+                    - 1]
+                .clone()
+            } else {
+                Value::Variable(var)
+            },
+        });
+    }
+
+    for _ in 0..n_borrowed {
+        function.pop(globals);
+    }
+
+    for value in &test_scope.stack {
+        function.push(value.clone());
+    }
+
+    function.add_instruction(Instruction::While(phis, test_scope, test, body_scope));
 
     Result::Ok(())
 }
@@ -363,9 +487,55 @@ fn compile_block(
                 function.push(b);
                 function.push(a);
             }
+            Word::Id("over") => {
+                let (a, b) = function.pop2_of_any_type(globals, location, lexer)?;
+                function.push(a.clone());
+                function.push(b);
+                function.push(a);
+            }
+            Word::Id("rot") => {
+                let [a, b, c] = function.pop3_of_any_type(globals, location, lexer)?;
+                function.push(b);
+                function.push(c);
+                function.push(a);
+            }
             Word::Id("print") => {
-                let value = function.pop_of_type(Type::String, globals, location, lexer)?;
-                function.add_instruction(Instruction::Print(value));
+                let value = function.pop_of_any_type(globals, location, lexer)?;
+                match type_of(&value, function, globals) {
+                    Type::Int => function.add_instruction(Instruction::Printf(
+                        Value::Global(globals.new_string("%lld\n")),
+                        [value].to_vec(),
+                    )),
+                    Type::String => function.add_instruction(Instruction::Putstr(value)),
+                    Type::Bool => function.add_instruction(Instruction::Putstr(Value::Global(
+                        globals.new_string("<todo: print bool>"),
+                    ))),
+                    Type::List => {
+                        if let Value::ListLiteral(types) = value {
+                            function.add_instruction(Instruction::Putstr(Value::Global(
+                                globals.new_string(&display_type_list(&types)),
+                            )))
+                        } else {
+                            todo!("support list that aren't compile time lists of types")
+                        }
+                    }
+                    Type::FnPtr(arg_types, result_types) => function.add_instruction(
+                        Instruction::Putstr(Value::Global(globals.new_string(&format!(
+                            "fn ({}) -> ({})",
+                            display_type_list(&arg_types),
+                            display_type_list(&result_types)
+                        )))),
+                    ),
+                    Type::Type_ => {
+                        if let Value::Type(type_) = value {
+                            function.add_instruction(Instruction::Putstr(Value::Global(
+                                globals.new_string(&type_.to_string()),
+                            )))
+                        } else {
+                            panic!("Only Value::Type can be pf type Type");
+                        }
+                    }
+                }
             }
             Word::Id("exit") => {
                 let mut stack = Vec::new();
@@ -414,6 +584,7 @@ fn compile_block(
             Word::Id("call") => compile_call(function, globals, lexer, location)?,
             Word::Id("if") => compile_if(function, globals, lexer, location)?,
             Word::Id("loop") => compile_loop(function, globals, lexer, location)?,
+            Word::Id("while") => compile_while(function, globals, lexer, location)?,
             Word::Id("fn") => {
                 lexer.consume_and_expect("(")?;
 
@@ -472,21 +643,23 @@ fn compile_function(
     let mut function = Function::new(arg_types, result_types);
     compile_block(lexer, &mut function, globals, consume_all)?;
 
-    let returned_types: Vec<Type> = function
-        .get_single_scope()
-        .stack
-        .iter()
-        .map(|value| type_of(value, &function, globals))
-        .collect();
-    if returned_types != function.result_types {
-        return Result::Err(lexer.make_error_report(
-            Location::char_at(function.get_single_scope().end),
-            &format!(
-                "expected {}, found {}",
-                ir::display_type_list(&function.result_types),
-                function.stack_as_string(globals)
-            ),
-        ));
+    if !function.is_no_return() {
+        let returned_types: Vec<Type> = function
+            .get_single_scope()
+            .stack
+            .iter()
+            .map(|value| type_of(value, &function, globals))
+            .collect();
+        if returned_types != function.result_types {
+            return Result::Err(lexer.make_error_report(
+                Location::char_at(function.get_single_scope().end),
+                &format!(
+                    "expected {}, found {}",
+                    ir::display_type_list(&function.result_types),
+                    function.stack_as_string(globals)
+                ),
+            ));
+        }
     }
 
     Result::Ok(function)

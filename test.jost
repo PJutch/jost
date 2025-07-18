@@ -3,9 +3,9 @@
 ("test2" print)
 call
 
-1 2 + Int : pop
+1 2 + Int : print
 1 2 == 2 3 != && pop
-23 12 - pop
+23 12 - print
 
 true ! false || true || Bool :
 if ("test3" print)
@@ -30,5 +30,9 @@ false if ("unreachable") else ("test if-else pushing on the stack") print
 false if (pop 1 exit) else ("test unreachable case not causing type errors") print
 print
 
-false if (1 exit) else (1 2 +) 5 + pop
+false if (1 exit) else (1 2 +) 5 + print
+
+0 while (dup 5 <) (1 + "test while with counter" print) pop
+
+0 loop (dup 5 >= if (pop 0 exit) "test loop with counter" print 1 +)
 

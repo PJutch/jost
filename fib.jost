@@ -1,0 +1,2 @@
+0 0 1 while (rot 1 + dup 15 <=) (rot rot dup print swp over +) pop pop pop
+

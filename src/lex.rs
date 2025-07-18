@@ -151,27 +151,19 @@ impl<'a, 'b> Lexer<'a, 'b> {
 
     fn nth_line(&self, line: i64) -> &'a str {
         let mut current_line = 0;
-        let mut last_line_start = 0;
-
-        let mut target_line_start = 0;
-        let mut target_line_end = 0;
+        let mut line_start = 0;
 
         for (i, char) in self.code.bytes().enumerate() {
             if char == b'\n' {
                 current_line += 1;
-                last_line_start = i + 1;
-            }
-
-            if current_line == line {
-                target_line_start = last_line_start;
-                target_line_end = self.code.len() - 1;
-            } else if current_line == line + 1 {
-                target_line_end = last_line_start - 1;
-                break;
+                if current_line == line {
+                    line_start = i + 1;
+                }
             }
         }
 
-        &self.code[target_line_start..target_line_end]
+        let trimed_begin = &self.code[line_start..];
+        &trimed_begin[0..trimed_begin.find('\n').unwrap_or(trimed_begin.len())]
     }
 
     pub fn make_error_report(&self, location: Location, message: &str) -> String {
