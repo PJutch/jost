@@ -11,17 +11,21 @@ use core::panic;
 use std::collections::HashMap;
 
 struct GenerationContext {
+    generated: Vec<String>,
     last_var_number: i64,
     var_numbers: HashMap<i64, i64>,
     last_control_flow: i64,
+    last_label: String,
 }
 
 impl GenerationContext {
     fn new() -> Self {
         Self {
+            generated: Vec::from([String::new()]),
             last_var_number: 0,
             var_numbers: HashMap::new(),
             last_control_flow: 0,
+            last_label: String::new(),
         }
     }
 
@@ -61,6 +65,39 @@ impl GenerationContext {
     fn next_contol_flow(&mut self) -> i64 {
         self.last_control_flow += 1;
         self.last_control_flow
+    }
+
+    fn append(&mut self, code: &str) {
+        *self
+            .generated
+            .last_mut()
+            .expect("at least one piece of code should exist") += code;
+    }
+
+    fn new_block(&mut self) {
+        self.generated.push(String::new());
+    }
+
+    fn pop_block(&mut self) -> String {
+        self.generated
+            .pop()
+            .expect("at least one piece of code should exist")
+    }
+
+    fn clear(&mut self) {
+        self.last_var_number = 0;
+        self.last_control_flow = 0;
+
+        self.var_numbers.clear();
+    }
+
+    fn label(&mut self, type_: &str, subtype: &str, id: i64) {
+        let label = format!("{type_}{id}_{subtype}");
+
+        self.append(&label);
+        self.append(":\n");
+
+        self.last_label = label;
     }
 }
 
@@ -118,20 +155,20 @@ fn to_llvm_type_multiple(types: &[Type]) -> String {
 fn generate_instruction_llvm(
     instruction: &Instruction,
     context: &mut GenerationContext,
-) -> Result<String, String> {
+) -> Result<(), String> {
     match instruction {
         Instruction::Arithemtic(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
-            Result::Ok(format!(
+            context.append(&format!(
                 "    %{result_var_number} = {} i64 {}, {}\n",
                 llvm_arithmetic(*op),
                 context.to_expression(a),
                 context.to_expression(b),
-            ))
+            ));
         }
         Instruction::Relational(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
-            Result::Ok(format!(
+            context.append(&format!(
                 "    %{result_var_number} = icmp {} i64 {}, {}\n",
                 llvm_relational(*op),
                 context.to_expression(a),
@@ -141,12 +178,12 @@ fn generate_instruction_llvm(
         Instruction::Logical(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             match op {
-                Logical::And => Result::Ok(format!(
+                Logical::And => context.append(&format!(
                     "    %{result_var_number} = select i1 {}, i1 {}, i1 false\n",
                     context.to_expression(a),
                     context.to_expression(b)
                 )),
-                Logical::Or => Result::Ok(format!(
+                Logical::Or => context.append(&format!(
                     "    %{result_var_number} = select i1 {}, i1 true, i1 {}\n",
                     context.to_expression(a),
                     context.to_expression(b)
@@ -155,73 +192,72 @@ fn generate_instruction_llvm(
         }
         Instruction::Not(value, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
-            Result::Ok(format!(
+            context.append(&format!(
                 "    %{result_var_number} = icmp eq i1 {}, false\n",
                 context.to_expression(value)
             ))
         }
         Instruction::Putstr(value) => {
             let var_number = context.next_var_number_anonymous();
-            Result::Ok(format!(
+            context.append(&format!(
                 "    %{var_number} = call i32 @puts(ptr {})\n",
                 context.to_expression(value)
             ))
         }
         Instruction::Printf(format_string, args) => {
             let var_number = context.next_var_number_anonymous();
-            let mut llvm = "    %".to_owned();
-            llvm += &var_number.to_string();
-            llvm += " = call i32 @printf(ptr ";
-            llvm += &context.to_expression(format_string);
+            context.append("    %");
+            context.append(&var_number.to_string());
+            context.append(" = call i32 @printf(ptr ");
+            context.append(&context.to_expression(format_string));
             for arg in args {
                 // TODO: support argument types other than Int
-                llvm += ", i64 ";
-                llvm += &context.to_expression(arg);
+                context.append(", i64 ");
+                context.append(&context.to_expression(arg));
             }
-            llvm += ")\n";
-            Result::Ok(llvm)
+            context.append(")\n");
         }
         Instruction::Exit(value) => {
             context.next_var_number_anonymous();
-            Result::Ok(format!(
+            context.append(&format!(
                 "    call void @exit(i32 {})\n    unreachable\n",
                 context.to_expression(value)
             ))
         }
         Instruction::Call(value, arg_types, args, result_types, results) => {
-            let mut llvm = "    ".to_owned();
+            context.append("    ");
             let returned_type = to_llvm_type_multiple(result_types);
 
             let returned_var_number = if !results.is_empty() {
                 let result_var_number = context.next_var_number_anonymous();
-                llvm += &format!("%{result_var_number} = call {returned_type} ");
+                context.append(&format!("%{result_var_number} = call {returned_type} "));
                 Option::Some(result_var_number)
             } else {
-                llvm += "call void ";
+                context.append("call void ");
                 Option::None
             };
 
-            llvm += &context.to_callable(value);
+            context.append(&context.to_callable(value));
 
-            llvm += "(";
+            context.append("(");
             for (i, arg) in args.iter().enumerate() {
-                llvm += &format!(
+                context.append(&format!(
                     "{}{} {}",
                     if i == 0 { "" } else { ", " },
                     to_llvm_type(&arg_types[i]),
                     context.to_expression(arg)
-                );
+                ));
             }
-            llvm += ")\n";
+            context.append(")\n");
 
             if results.len() > 1 {
                 let returned_var_number =
                     returned_var_number.expect("results.len() is checked above");
                 for (i, result_var) in results.iter().enumerate() {
                     let var_number = context.next_var_number(*result_var);
-                    llvm += &format!(
+                    context.append(&format!(
                         "    %{var_number} = extractvalue {returned_type} %{returned_var_number}, {i}\n"
-                    );
+                    ));
                 }
             } else if let Some(result_var) = results.first() {
                 context.var_numbers.insert(
@@ -229,116 +265,128 @@ fn generate_instruction_llvm(
                     returned_var_number.expect("results are checked to not be empty above"),
                 );
             }
-
-            Result::Ok(llvm)
         }
         Instruction::If(condition, then_block, else_block, phis) => {
             let if_id = context.next_contol_flow();
-            let mut llvm = format!(
-                "    br label %if{if_id}_start\nif{if_id}_start:\n    br i1 {}, label %if{if_id}_true, label %if{if_id}_else\n",
+
+            context.append(&format!(
+                "    br i1 {}, label %if{if_id}_true, label %if{if_id}_false\n",
                 context.to_expression(condition)
-            );
+            ));
 
-            llvm += &format!("if{if_id}_true:\n");
+            context.label("if", "true", if_id);
             for instruction in &then_block.ir {
-                llvm += &generate_instruction_llvm(instruction, context)?;
+                generate_instruction_llvm(instruction, context)?
             }
-            llvm += &format!("    br label %if{if_id}_end\n");
+            context.append(&format!("    br label %if{if_id}_end\n"));
+            let then_label = context.last_label.clone();
 
-            llvm += &format!("if{if_id}_else:\n");
+            context.label("if", "false", if_id);
             for instruction in &else_block.ir {
-                llvm += &generate_instruction_llvm(instruction, context)?;
+                generate_instruction_llvm(instruction, context)?;
             }
-            llvm += &format!("    br label %if{if_id}_end\n");
+            context.append(&format!("    br label %if{if_id}_end\n"));
+            let else_label = context.last_label.clone();
 
-            llvm += &format!("if{if_id}_end:\n");
+            context.label("if", "end", if_id);
             for phi in phis {
-                llvm += &format!(
-                    "    %{} = phi {} [ {}, %if{if_id}_true ], [ {}, %if{if_id}_else ]\n",
+                let code = format!(
+                    "    %{} = phi {} [ {}, %{then_label} ], [ {}, %{else_label} ]\n",
                     context.next_var_number(phi.result_var),
                     to_llvm_type(&phi.result_type),
                     context.to_expression(&phi.case1),
                     context.to_expression(&phi.case2)
-                )
+                );
+                context.append(&code);
             }
-
-            Result::Ok(llvm)
         }
         Instruction::Loop(phis, body_scope) => {
+            let start_label = context.last_label.clone();
+
             let loop_id = context.next_contol_flow();
-            let mut llvm = format!("    br label %loop{loop_id}_start\nloop{loop_id}_start:\n    br label %loop{loop_id}_body\nloop{loop_id}_body:\n");
+            context.append(&format!("    br label %loop{loop_id}_body\n"));
+            context.label("loop", "body", loop_id);
 
             let phi_var_numbers: Vec<i64> = phis
                 .iter()
                 .map(|phi| context.next_var_number(phi.result_var))
                 .collect();
 
-            let mut body_llvm = String::new();
+            context.new_block();
             for instruction in &body_scope.ir {
-                body_llvm += &generate_instruction_llvm(instruction, context)?;
+                generate_instruction_llvm(instruction, context)?;
             }
+            let body_llvm = context.pop_block();
+            let body_label = context.last_label.clone();
 
             for (i, phi) in phis.iter().enumerate() {
-                llvm += &format!(
-                    "    %{} = phi {} [ {}, %loop{loop_id}_start ], [ {}, %loop{loop_id}_back ]\n",
+                context.append(&format!(
+                    "    %{} = phi {} [ {}, %{start_label} ], [ {}, %{body_label} ]\n",
                     phi_var_numbers[i],
                     to_llvm_type(&phi.result_type),
                     context.to_expression(&phi.case1),
                     context.to_expression(&phi.case2)
-                );
+                ));
             }
 
-            llvm += &body_llvm;
+            context.append(&body_llvm);
 
-            llvm += &format!("    br label %loop{loop_id}_back\nloop{loop_id}_back:\n    br label %loop{loop_id}_body\n");
-            Result::Ok(llvm)
+            context.append(&format!("    br label %loop{loop_id}_body\n"));
         }
         Instruction::While(phis, test_scope, test, body_scope) => {
+            let start_label = context.last_label.clone();
+
             let while_id = context.next_contol_flow();
-            let mut llvm = format!("    br label %while{while_id}_start\nwhile{while_id}_start:\n    br label %while{while_id}_test\nwhile{while_id}_test:\n");
+            context.append(&format!("    br label %while{while_id}_test\n"));
+            context.label("while", "test", while_id);
 
             let mut phi_var_numbers = Vec::new();
             for phi in phis {
                 phi_var_numbers.push(context.next_var_number(phi.result_var));
             }
 
-            let mut test_llvm = String::new();
+            context.new_block();
             for instruction in &test_scope.ir {
-                test_llvm += &generate_instruction_llvm(instruction, context)?;
+                generate_instruction_llvm(instruction, context)?;
             }
+            let test_llvm = context.pop_block();
 
-            let mut body_llvm = String::new();
+            context.new_block();
+            context.label("while", "body", while_id);
             for instruction in &body_scope.ir {
-                body_llvm += &generate_instruction_llvm(instruction, context)?;
+                generate_instruction_llvm(instruction, context)?;
             }
+            let body_llvm = context.pop_block();
+            let body_label = context.last_label.clone();
 
             for (i, phi) in phis.iter().enumerate() {
-                llvm += &format!(
-                    "    %{} = phi {} [ {}, %while{while_id}_start ], [ {}, %while{while_id}_back ]\n",
+                context.append(&format!(
+                    "    %{} = phi {} [ {}, %{start_label} ], [ {}, %{body_label} ]\n",
                     phi_var_numbers[i],
                     to_llvm_type(&phi.result_type),
                     context.to_expression(&phi.case1),
                     context.to_expression(&phi.case2)
-                )
+                ));
             }
 
-            llvm += &test_llvm;
-            llvm += &format!("    br i1 {}, label %while{while_id}_body, label %while{while_id}_end\nwhile{while_id}_body:\n", context.to_expression(test));
-            llvm += &body_llvm;
-            llvm += &format!("    br label %while{while_id}_back\nwhile{while_id}_back:\n    br label %while{while_id}_test\nwhile{while_id}_end:");
-
-            Result::Ok(llvm)
+            context.append(&test_llvm);
+            context.append(&format!(
+                "    br i1 {}, label %while{while_id}_body, label %while{while_id}_end\n",
+                context.to_expression(test)
+            ));
+            context.append(&body_llvm);
+            context.append(&format!("    br label %while{while_id}_test\n"));
+            context.label("while", "end", while_id);
         }
     }
+    Result::Ok(())
 }
 
 fn generate_function_llvm(
     function: &Function,
     context: &mut GenerationContext,
     numbering_fix: bool,
-) -> Result<String, String> {
-    let mut llvm = String::new();
-
+) -> Result<(), String> {
     for i in 0..function.arg_types.len() {
         context.next_var_number(i as i64);
     }
@@ -346,60 +394,58 @@ fn generate_function_llvm(
         context.next_var_number_anonymous();
     }
 
+    context.append("entry:");
+    context.last_label = "entry".to_owned();
+
     for instruction in &function.get_single_scope().ir {
-        let word_ir = generate_instruction_llvm(instruction, context)?;
-        llvm += &word_ir;
+        generate_instruction_llvm(instruction, context)?;
     }
 
-    Result::Ok(llvm)
+    Result::Ok(())
 }
 
-fn generate_llvm_sig(name: &str, function: &Function) -> String {
-    let mut llvm = "define ".to_owned();
-    llvm += &to_llvm_type_multiple(&function.result_types);
-    llvm += " ";
-    llvm += name;
+fn generate_llvm_sig(name: &str, function: &Function, context: &mut GenerationContext) {
+    context.append("define ");
+    context.append(&to_llvm_type_multiple(&function.result_types));
+    context.append(" ");
+    context.append(name);
 
-    llvm += "(";
+    context.append("(");
     for (i, arg_type) in function.arg_types.iter().enumerate() {
         if i > 0 {
-            llvm += ", ";
+            context.append(", ");
         }
-        llvm += to_llvm_type(arg_type);
+        context.append(to_llvm_type(arg_type));
 
-        llvm += " %";
-        llvm += &(i + 1).to_string();
+        context.append(" %");
+        context.append(&(i + 1).to_string());
     }
-    llvm += ") {\n";
-
-    llvm
+    context.append(") {");
 }
 
-fn generate_returns(function: &Function, context: &mut GenerationContext) -> String {
+fn generate_returns(function: &Function, context: &mut GenerationContext) {
     let result_values = &function.get_single_scope().stack;
     let returned_type = to_llvm_type_multiple(&function.result_types);
     if result_values.len() > 1 {
-        let mut result = String::new();
         let mut current_struct = "undef".to_owned();
         for (i, value) in result_values.iter().enumerate() {
             let var_number = context.next_var_number_anonymous();
-            result += &format!(
+            context.append(&format!(
                 "    %{var_number} = insertvalue {returned_type} {current_struct}, {} {}, {i}\n",
                 to_llvm_type(&function.result_types[i]),
                 context.to_expression(value)
-            );
+            ));
             current_struct = format!("%{var_number}")
         }
-        result += &format!("    ret {returned_type} {current_struct}\n");
-        result
+        context.append(&format!("    ret {returned_type} {current_struct}\n"));
     } else if let Some(value) = result_values.first() {
-        format!(
+        context.append(&format!(
             "    ret {} {}\n",
             returned_type,
             context.to_expression(value)
-        )
+        ));
     } else {
-        "    ret void\n".to_owned()
+        context.append("    ret void");
     }
 }
 
@@ -408,34 +454,35 @@ pub fn generate_llvm(
     globals: &Globals,
     numbering_fix: bool,
 ) -> Result<String, String> {
-    let mut llvm =
-        "target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n"
-            .to_owned();
+    let mut context = GenerationContext::new();
+    context
+        .append("target triple = \"x86_64-pc-windows-msvc19.40.33813\"\n\ndefine i32 @main() {\n");
 
-    llvm += &generate_function_llvm(function, &mut GenerationContext::new(), numbering_fix)?;
-    llvm += "    ret i32 0\n}\n\n";
+    generate_function_llvm(function, &mut context, numbering_fix)?;
+    context.append("    ret i32 0\n}\n\n");
 
     for (i, lambda) in globals.lambdas.iter().enumerate() {
-        llvm += &generate_llvm_sig(&format!("@__lambda{}", i + 1), lambda);
+        context.clear();
+        generate_llvm_sig(&format!("@__lambda{}", i + 1), lambda, &mut context);
 
-        let mut context = GenerationContext::new();
-        llvm += &generate_function_llvm(lambda, &mut context, numbering_fix)?;
-        llvm += &generate_returns(lambda, &mut context);
+        generate_function_llvm(lambda, &mut context, numbering_fix)?;
+        generate_returns(lambda, &mut context);
 
-        llvm += "}\n\n";
+        context.append("}\n\n");
     }
 
     for (i, string) in globals.strings.iter().enumerate() {
-        llvm += &format!(
+        context.append(&format!(
             "@__string{} = constant [{} x i8] c\"{string}\\00\"\n",
             i + 1,
             string.len() + 1
-        );
+        ));
     }
-    llvm += "\n";
+    context.append("\n");
 
-    llvm += "declare i32 @puts(ptr)\n";
-    llvm += "declare void @exit(i32) noreturn\n";
-    llvm += "declare i32 @printf(ptr, ...)\n";
-    Result::Ok(llvm)
+    context.append("declare i32 @puts(ptr)\n");
+    context.append("declare void @exit(i32) noreturn\n");
+    context.append("declare i32 @printf(ptr, ...)\n");
+
+    Result::Ok(context.pop_block())
 }
