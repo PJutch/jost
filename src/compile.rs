@@ -555,9 +555,28 @@ fn compile_block(
                         [value].to_vec(),
                     )),
                     Type::String => function.add_instruction(Instruction::Putstr(value)),
-                    Type::Bool => function.add_instruction(Instruction::Putstr(Value::Global(
-                        globals.new_string("<todo: print bool>"),
-                    ))),
+                    Type::Bool => {
+                        function.new_scope(false);
+                        let then_scope = function.scopes.pop().expect("scope was created above");
+
+                        function.new_scope(false);
+                        let else_scope = function.scopes.pop().expect("scope was created above");
+
+                        let var = function.new_var(Type::String);
+                        function.add_instruction(Instruction::If(
+                            value,
+                            then_scope,
+                            else_scope,
+                            Vec::from([Phi {
+                                result_var: var,
+                                result_type: Type::String,
+                                case1: Value::Global(globals.new_string("true")),
+                                case2: Value::Global(globals.new_string("false")),
+                            }]),
+                        ));
+
+                        function.add_instruction(Instruction::Putstr(Value::Variable(var)));
+                    }
                     Type::List => {
                         if let Value::ListLiteral(types) = value {
                             function.add_instruction(Instruction::Putstr(Value::Global(

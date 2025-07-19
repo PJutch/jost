@@ -4,7 +4,7 @@
 call
 
 1 2 + Int : print
-1 2 == 2 3 != && pop
+1 2 == 2 3 != && print
 23 12 - print
 
 true ! false || true || Bool :
