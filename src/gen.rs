@@ -125,6 +125,7 @@ pub fn llvm_relational(op: Relational) -> &'static str {
 fn to_llvm_type(type_: &Type) -> &'static str {
     match type_ {
         Type::Int => "i64",
+        Type::Int32 => "i32",
         Type::Bool => "i1",
         Type::String => "ptr",
         Type::List => panic!("represent lists in runtime"),
@@ -278,14 +279,18 @@ fn generate_instruction_llvm(
             for instruction in &then_block.ir {
                 generate_instruction_llvm(instruction, context)?
             }
-            context.append(&format!("    br label %if{if_id}_end\n"));
+            if !then_block.no_return {
+                context.append(&format!("    br label %if{if_id}_end\n"));
+            }
             let then_label = context.last_label.clone();
 
             context.label("if", "false", if_id);
             for instruction in &else_block.ir {
                 generate_instruction_llvm(instruction, context)?;
             }
-            context.append(&format!("    br label %if{if_id}_end\n"));
+            if !else_block.no_return {
+                context.append(&format!("    br label %if{if_id}_end\n"));
+            }
             let else_label = context.last_label.clone();
 
             context.label("if", "end", if_id);
@@ -378,6 +383,30 @@ fn generate_instruction_llvm(
             context.append(&format!("    br label %while{while_id}_test\n"));
             context.label("while", "end", while_id);
         }
+        Instruction::Return(values, types) => {
+            let returned_type = to_llvm_type_multiple(types);
+            if values.len() > 1 {
+                let mut current_struct = "undef".to_owned();
+                for (i, value) in values.iter().enumerate() {
+                    let var_number = context.next_var_number_anonymous();
+                    context.append(&format!(
+                        "    %{var_number} = insertvalue {returned_type} {current_struct}, {} {}, {i}\n",
+                        to_llvm_type(&types[i]),
+                        context.to_expression(value)
+                    ));
+                    current_struct = format!("%{var_number}")
+                }
+                context.append(&format!("    ret {returned_type} {current_struct}\n"));
+            } else if let Some(value) = values.first() {
+                context.append(&format!(
+                    "    ret {} {}\n",
+                    returned_type,
+                    context.to_expression(value)
+                ));
+            } else {
+                context.append("    ret void\n");
+            }
+        }
     }
     Result::Ok(())
 }
@@ -394,7 +423,7 @@ fn generate_function_llvm(
         context.next_var_number_anonymous();
     }
 
-    context.append("entry:");
+    context.append("entry:\n");
     context.last_label = "entry".to_owned();
 
     for instruction in &function.get_single_scope().ir {
@@ -420,33 +449,7 @@ fn generate_llvm_sig(name: &str, function: &Function, context: &mut GenerationCo
         context.append(" %");
         context.append(&(i + 1).to_string());
     }
-    context.append(") {");
-}
-
-fn generate_returns(function: &Function, context: &mut GenerationContext) {
-    let result_values = &function.get_single_scope().stack;
-    let returned_type = to_llvm_type_multiple(&function.result_types);
-    if result_values.len() > 1 {
-        let mut current_struct = "undef".to_owned();
-        for (i, value) in result_values.iter().enumerate() {
-            let var_number = context.next_var_number_anonymous();
-            context.append(&format!(
-                "    %{var_number} = insertvalue {returned_type} {current_struct}, {} {}, {i}\n",
-                to_llvm_type(&function.result_types[i]),
-                context.to_expression(value)
-            ));
-            current_struct = format!("%{var_number}")
-        }
-        context.append(&format!("    ret {returned_type} {current_struct}\n"));
-    } else if let Some(value) = result_values.first() {
-        context.append(&format!(
-            "    ret {} {}\n",
-            returned_type,
-            context.to_expression(value)
-        ));
-    } else {
-        context.append("    ret void");
-    }
+    context.append(") {\n");
 }
 
 pub fn generate_llvm(
@@ -466,7 +469,6 @@ pub fn generate_llvm(
         generate_llvm_sig(&format!("@__lambda{}", i + 1), lambda, &mut context);
 
         generate_function_llvm(lambda, &mut context, numbering_fix)?;
-        generate_returns(lambda, &mut context);
 
         context.append("}\n\n");
     }

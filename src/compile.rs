@@ -267,6 +267,10 @@ fn compile_loop(
     compile_block(lexer, function, globals, false)?;
     let mut body_scope = function.scopes.pop().expect("scope was created above");
 
+    if body_scope.no_return {
+        return Result::Err(lexer.make_error_report(location, "loop body shouldn't be noreturn"));
+    }
+
     let expected_types: Vec<Type> = (0..body_scope.n_borrowed)
         .map(|i| type_of(&body_scope.borrowed_vars[&i].1, function, globals))
         .collect();
@@ -334,6 +338,14 @@ fn compile_while(
     let body_scope = function.scopes.pop().expect("scopes were created above");
     let mut test_scope = function.scopes.pop().expect("scopes were created above");
 
+    if test_scope.no_return {
+        return Result::Err(lexer.make_error_report(location, "while test can't be noreturn"));
+    }
+
+    if body_scope.no_return {
+        return Result::Err(lexer.make_error_report(location, "while body can't be noreturn"));
+    }
+
     let n_borrowed = body_scope.n_borrowed + test_scope.n_borrowed - test_scope.stack.len() as i64;
 
     let expected_types: Vec<Type> = (0..n_borrowed)
@@ -391,6 +403,38 @@ fn compile_while(
     function.add_instruction(Instruction::While(phis, test_scope, test, body_scope));
 
     Result::Ok(())
+}
+
+fn compile_return(
+    function: &mut Function,
+    globals: &Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    let mut stack = Vec::new();
+    while let Some(value) = function.pop(globals) {
+        stack.push(value);
+    }
+    stack.reverse();
+
+    let types: Vec<Type> = stack
+        .iter()
+        .map(|value| type_of(value, function, globals))
+        .collect();
+    if types == function.result_types {
+        function.add_instruction(Instruction::Return(stack, types));
+        function.mark_no_return();
+        Result::Ok(())
+    } else {
+        Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "function returns {}, found {}",
+                display_type_list(&function.result_types),
+                display_type_list(&types)
+            ),
+        ))
+    }
 }
 
 fn compile_block(
@@ -506,6 +550,10 @@ fn compile_block(
                         Value::Global(globals.new_string("%lld\n")),
                         [value].to_vec(),
                     )),
+                    Type::Int32 => function.add_instruction(Instruction::Printf(
+                        Value::Global(globals.new_string("%d\n")),
+                        [value].to_vec(),
+                    )),
                     Type::String => function.add_instruction(Instruction::Putstr(value)),
                     Type::Bool => function.add_instruction(Instruction::Putstr(Value::Global(
                         globals.new_string("<todo: print bool>"),
@@ -563,6 +611,7 @@ fn compile_block(
                 ));
                 function.mark_no_return();
             }
+            Word::Id("return") => compile_return(function, globals, lexer, location)?,
             Word::Id("[]") => {
                 function.push(Value::ListLiteral(Vec::new()));
             }
@@ -638,27 +687,20 @@ fn compile_function(
     globals: &mut Globals,
     arg_types: Vec<Type>,
     result_types: Vec<Type>,
-    consume_all: bool,
+    main: bool,
 ) -> Result<Function, String> {
     let mut function = Function::new(arg_types, result_types);
-    compile_block(lexer, &mut function, globals, consume_all)?;
+    compile_block(lexer, &mut function, globals, main)?;
 
     if !function.is_no_return() {
-        let returned_types: Vec<Type> = function
-            .get_single_scope()
-            .stack
-            .iter()
-            .map(|value| type_of(value, &function, globals))
-            .collect();
-        if returned_types != function.result_types {
-            return Result::Err(lexer.make_error_report(
-                Location::char_at(function.get_single_scope().end),
-                &format!(
-                    "expected {}, found {}",
-                    ir::display_type_list(&function.result_types),
-                    function.stack_as_string(globals)
-                ),
+        if main {
+            function.add_instruction(Instruction::Return(
+                Vec::from([Value::IntLiteral(0)]),
+                Vec::from([Type::Int32]),
             ));
+        } else {
+            let location = Location::char_at(function.get_single_scope().end);
+            compile_return(&mut function, globals, lexer, location)?;
         }
     }
 

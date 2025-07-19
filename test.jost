@@ -34,5 +34,12 @@ false if (1 exit) else (1 2 +) 5 + print
 
 0 while (dup 5 <) (1 + "test while with counter" print) pop
 
+[] [] String , fn ("test" return) call print
+
+[] Bool , [] fn (if ("test return" print return) "test normal path" print)
+dup true swp call
+dup false swp call
+pop
+
 0 loop (dup 5 >= if (pop 0 exit) "test loop with counter" print 1 +)
 

@@ -9,6 +9,7 @@ use core::panic;
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Type {
     Int,
+    Int32,
     Bool,
     String,
     FnPtr(Vec<Type>, Vec<Type>),
@@ -20,6 +21,7 @@ impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Int => f.write_str("Int"),
+            Type::Int32 => f.write_str("Int32"),
             Type::Bool => f.write_str("Bool"),
             Type::String => f.write_str("String"),
             Type::FnPtr(arg_types, result_types) => {
@@ -534,4 +536,5 @@ pub enum Instruction {
     If(Value, Scope, Scope, Vec<Phi>),
     Loop(Vec<Phi>, Scope),
     While(Vec<Phi>, Scope, Value, Scope),
+    Return(Vec<Value>, Vec<Type>),
 }
