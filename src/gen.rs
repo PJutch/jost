@@ -48,6 +48,15 @@ impl GenerationContext {
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("@{name}"),
+            Value::Zeroed(type_) => match type_ {
+                Type::Int | Type::Int32 => "0",
+                Type::Bool => "false",
+                Type::String | Type::FnPtr(_, _) => "null",
+                Type::List => todo!("represent lists in runtime"),
+                Type::Typ => panic!("types can't be used in runtime"),
+                Type::TypVar(_) => panic!("unresolved type var got to code gen"),
+            }
+            .to_owned(),
         }
     }
 
@@ -59,6 +68,7 @@ impl GenerationContext {
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) => format!("@{name}"),
+            Value::Zeroed(_) => "null".to_owned(),
         }
     }
 
@@ -130,10 +140,10 @@ fn to_llvm_type(type_: &Type) -> &'static str {
         Type::String => "ptr",
         Type::List => panic!("represent lists in runtime"),
         Type::FnPtr(_, _) => "ptr",
-        Type::Type_ => panic!("types can't be used at runtime"),
+        Type::Typ => panic!("types can't be used at runtime"),
+        Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }
 }
-
 fn to_llvm_type_multiple(types: &[Type]) -> String {
     if types.len() > 1 {
         let mut result = "{ ".to_owned();
@@ -158,6 +168,7 @@ fn generate_instruction_llvm(
     context: &mut GenerationContext,
 ) -> Result<(), String> {
     match instruction {
+        Instruction::Bogus => panic!("bogus instruction got to code gen"),
         Instruction::Arithemtic(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
@@ -218,6 +229,27 @@ fn generate_instruction_llvm(
             }
             context.append(")\n");
         }
+        Instruction::Input(type_, result_var) => match type_ {
+            Type::Int => todo!("implement input for ints"),
+            Type::Int32 => todo!("implement input for int32s"),
+            Type::String => {
+                let result_var_number = context.next_var_number(*result_var);
+                context.append(&format!(
+                    "%{result_var_number} = call ptr @gets_s(ptr @__string_buf, i64 256)\n"
+                ));
+            }
+            Type::Bool => {
+                context.next_var_number_anonymous();
+                let strcmp_result = context.next_var_number_anonymous();
+                let result_var_number = context.next_var_number(*result_var);
+                context.append("call void @gets_s(ptr @__string_buf, i64 256)\n");
+                context.append(&format!("%{strcmp_result} = call i32 @strcmp(ptr @__string_buf, ptr @__string_true)\n%{result_var_number} = icmp eq i32 %{strcmp_result}, 0"));
+            }
+            Type::List => todo!("represent lists in runtime"),
+            Type::FnPtr(_, _) => todo!("pick a good place to put fn ptr error message"),
+            Type::Typ => panic!("types can't be used in runtime"),
+            Type::TypVar(_) => panic!("unresolved type var got to codegen"),
+        },
         Instruction::Exit(value) => {
             context.next_var_number_anonymous();
             context.append(&format!(
@@ -485,6 +517,11 @@ pub fn generate_llvm(
     context.append("declare i32 @puts(ptr)\n");
     context.append("declare void @exit(i32) noreturn\n");
     context.append("declare i32 @printf(ptr, ...)\n");
+    context.append("declare ptr @gets_s(ptr, i64)\n");
+    context.append("declare i32 @strcmp(ptr, ptr)\n");
+
+    context.append("@__string_buf = global [256 x i8] zeroinitializer, align 1\n");
+    context.append("@__string_true = constant [5 x i8] c\"true\\00\"\n");
 
     Result::Ok(context.pop_block())
 }

@@ -1,3 +1,4 @@
+use crate::ir::display_type;
 use crate::ir::display_type_list;
 use crate::ir::type_of;
 
@@ -121,23 +122,24 @@ fn compile_call(
 
 fn do_type_assertion(
     function: &mut Function,
-    globals: &Globals,
+    globals: &mut Globals,
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(Value::Type(type_)) = function.nth_from_top(0, globals) {
-        if let Some(value) = function.nth_from_top(1, globals) {
-            if ir::type_of(&value, function, globals) != type_ {
-                return Result::Err(lexer.make_error_report(
+    if let Some(value) = function.nth_from_top(1, globals) {
+        if let Some(Value::Type(type_)) = function.pop(globals) {
+            return if globals.merge_types(&type_of(&value, function, globals), &type_) {
+                Result::Ok(())
+            } else {
+                Result::Err(lexer.make_error_report(
                     location,
                     &format!(
-                        "expected ... {type_}, found {}",
+                        "expected ... {}, found {}",
+                        display_type(&type_, globals),
                         function.stack_as_string(globals)
                     ),
-                ));
-            }
-            function.pop(globals);
-            return Result::Ok(());
+                ))
+            };
         }
     }
 
@@ -224,8 +226,8 @@ fn compile_if(
                 location,
                 &format!(
                     "then branch left {} on stack, but else branch left {}",
-                    ir::display_type_list(&then_types),
-                    ir::display_type_list(&else_types)
+                    display_type_list(&then_types, globals),
+                    display_type_list(&else_types, globals)
                 ),
             ));
         }
@@ -286,8 +288,8 @@ fn compile_loop(
             location,
             &format!(
                 "loop body consumed {}, but returned {}",
-                display_type_list(&expected_types),
-                display_type_list(&actual_types)
+                display_type_list(&expected_types, globals),
+                display_type_list(&actual_types, globals)
             ),
         ));
     }
@@ -363,8 +365,8 @@ fn compile_while(
             location,
             &format!(
                 "loop body consumed {}, but returned {}",
-                display_type_list(&expected_types),
-                display_type_list(&actual_types)
+                display_type_list(&expected_types, globals),
+                display_type_list(&actual_types, globals)
             ),
         ));
     }
@@ -430,8 +432,8 @@ fn compile_return(
             location,
             &format!(
                 "function returns {}, found {}",
-                display_type_list(&function.result_types),
-                display_type_list(&types)
+                display_type_list(&function.result_types, globals),
+                display_type_list(&types, globals)
             ),
         ))
     }
@@ -518,6 +520,9 @@ fn compile_block(
             Word::Id("false") => {
                 function.push(Value::BoolLiteral(false));
             }
+            Word::Id("zeroed") => {
+                function.push(Value::Zeroed(Type::TypVar(globals.new_type_var(location))));
+            }
             Word::Id("dup") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;
                 function.push(value.clone());
@@ -580,7 +585,7 @@ fn compile_block(
                     Type::List => {
                         if let Value::ListLiteral(types) = value {
                             function.add_instruction(Instruction::Putstr(Value::Global(
-                                globals.new_string(&display_type_list(&types)),
+                                globals.new_string(&display_type_list(&types, globals)),
                             )))
                         } else {
                             todo!("support list that aren't compile time lists of types")
@@ -589,20 +594,29 @@ fn compile_block(
                     Type::FnPtr(arg_types, result_types) => function.add_instruction(
                         Instruction::Putstr(Value::Global(globals.new_string(&format!(
                             "fn ({}) -> ({})",
-                            display_type_list(&arg_types),
-                            display_type_list(&result_types)
+                            display_type_list(&arg_types, globals),
+                            display_type_list(&result_types, globals)
                         )))),
                     ),
-                    Type::Type_ => {
+                    Type::Typ => {
                         if let Value::Type(type_) = value {
                             function.add_instruction(Instruction::Putstr(Value::Global(
-                                globals.new_string(&type_.to_string()),
+                                globals.new_string(&display_type(&type_, globals)),
                             )))
                         } else {
                             panic!("Only Value::Type can be pf type Type");
                         }
                     }
+                    Type::TypVar(_) => {
+                        return Result::Err("value of unknown type can't be printed".to_owned())
+                    }
                 }
+            }
+            Word::Id("input") => {
+                let type_ = Type::TypVar(globals.new_type_var(location));
+                let var = function.new_var(type_.clone());
+                function.push(Value::Variable(var));
+                function.add_instruction(Instruction::Input(type_, var));
             }
             Word::Id("exit") => {
                 let mut stack = Vec::new();
@@ -618,7 +632,7 @@ fn compile_block(
                 if types != [Type::Int] {
                     return Result::Err(format!(
                         "exit expects stack to be clean except single Int, found {}",
-                        display_type_list(&types)
+                        display_type_list(&types, globals)
                     ));
                 }
 
@@ -637,7 +651,7 @@ fn compile_block(
             Word::Id(",") => {
                 // TODO: support lists of type other than type
                 let (list, value) =
-                    function.pop2_of_type(Type::List, Type::Type_, globals, location, lexer)?;
+                    function.pop2_of_type(Type::List, Type::Typ, globals, location, lexer)?;
 
                 let value = value.unwrap_type();
                 let mut list = list.unwrap_list_literal();
@@ -727,5 +741,14 @@ fn compile_function(
 }
 
 pub fn compile_to_ir(lexer: &mut Lexer, globals: &mut Globals) -> Result<Function, String> {
-    compile_function(lexer, globals, Vec::new(), Vec::new(), true)
+    let mut main = compile_function(lexer, globals, Vec::new(), Vec::new(), true)?;
+
+    main = main.resolve_types(globals, lexer)?;
+    globals.lambdas = globals
+        .lambdas
+        .iter()
+        .map(|lambda| lambda.resolve_types(globals, lexer))
+        .collect::<Result<Vec<Function>, String>>()?;
+
+    Result::Ok(main)
 }

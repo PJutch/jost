@@ -41,5 +41,12 @@ dup true swp call
 dup false swp call
 pop
 
+zeroed Int : print
+zeroed 1 + print
+zeroed Bool : print
+
+input String : print
+input if ("got true" print) else ("didn't got true" print)
+
 0 loop (dup 5 >= if (pop 0 exit) "test loop with counter" print 1 +)
 
