@@ -47,7 +47,7 @@ impl GenerationContext {
             Value::ListLiteral(_) => todo!("represent lists in runtime"),
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
-            Value::Global(name) => format!("@{name}"),
+            Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Zeroed(type_) => match type_ {
                 Type::Int | Type::Int32 => "0",
                 Type::Bool => "false",
@@ -67,7 +67,7 @@ impl GenerationContext {
             Value::ListLiteral(_) => panic!("trying to call a list literal"),
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
-            Value::Global(name) => format!("@{name}"),
+            Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Zeroed(_) => "null".to_owned(),
         }
     }
@@ -501,6 +501,15 @@ pub fn generate_llvm(
         generate_llvm_sig(&format!("@__lambda{}", i + 1), lambda, &mut context);
 
         generate_function_llvm(lambda, &mut context, numbering_fix)?;
+
+        context.append("}\n\n");
+    }
+
+    for (name, function) in &globals.functions {
+        context.clear();
+        generate_llvm_sig(&("@".to_owned() + name), function, &mut context);
+
+        generate_function_llvm(function, &mut context, numbering_fix)?;
 
         context.append("}\n\n");
     }

@@ -11,7 +11,7 @@ true ! false || true || Bool :
 if ("test3" print)
 
 "test arg" "test arg 2"
-[] String , String , [] String , String , fn (String : dup print) call
+[] String , String , [] String , String , lambda (String : dup print) call
 print
 print
 
@@ -34,9 +34,9 @@ false if (1 exit) else (1 2 +) 5 + print
 
 0 while (dup 5 <) (1 + "test while with counter" print) pop
 
-[] [] String , fn ("test" return) call print
+[] [] String , lambda ("test" return) call print
 
-[] Bool , [] fn (if ("test return" print return) "test normal path" print)
+[] Bool , [] lambda (if ("test return" print return) "test normal path" print)
 dup true swp call
 dup false swp call
 pop
@@ -46,7 +46,10 @@ zeroed 1 + print
 zeroed Bool : print
 
 input String : print
-input if ("got true" print) else ("didn't got true" print)
+input if ("got true" print) else ("didn't get true" print)
+
+[] [] fn test_fn ("test function" print)
+test_fn test_fn test_fn
 
 0 loop (dup 5 >= if (pop 0 exit) "test loop with counter" print 1 +)
 

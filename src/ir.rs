@@ -28,6 +28,7 @@ pub enum Value {
     Variable(i64),
     Arg(i64),
     Global(String),
+    Function(String),
     Zeroed(Type),
 }
 
@@ -66,6 +67,7 @@ pub struct Globals {
 
     pub strings: Vec<String>,
     pub lambdas: Vec<Function>,
+    pub functions: HashMap<String, Function>,
 
     type_vars: HashMap<i64, Type>,
     type_var_locations: HashMap<i64, Location>,
@@ -78,6 +80,7 @@ impl Globals {
             global_types: HashMap::new(),
             strings: Vec::new(),
             lambdas: Vec::new(),
+            functions: HashMap::new(),
             type_vars: HashMap::new(),
             type_var_locations: HashMap::new(),
             last_type_var: -1,
@@ -636,6 +639,18 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
         Value::Variable(index) => globals.resolve_type(&function.var_types[index]),
         Value::Arg(index) => globals.resolve_type(&function.arg_types[*index as usize]),
         Value::Global(name) => globals.resolve_type(&globals.global_types[name]),
+        Value::Function(name) => Type::FnPtr(
+            globals.functions[name]
+                .arg_types
+                .iter()
+                .map(|type_| globals.resolve_type(type_))
+                .collect(),
+            globals.functions[name]
+                .result_types
+                .iter()
+                .map(|type_| globals.resolve_type(type_))
+                .collect(),
+        ),
         Value::Zeroed(type_) => globals.resolve_type(type_),
     }
 }

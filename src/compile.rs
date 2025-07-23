@@ -65,59 +65,63 @@ fn is_logical_op(id: &str) -> bool {
 
 fn compile_call(
     current_function: &mut Function,
+    called_value: Value,
     globals: &Globals,
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(fn_ptr) = current_function.nth_from_top(0, globals) {
-        if let Type::FnPtr(arg_types, result_types) =
-            ir::type_of(&fn_ptr, current_function, globals)
-        {
-            if arg_types.iter().enumerate().all(|(i, arg_type)| {
-                current_function
-                    .nth_from_top((arg_types.len() - i) as i64, globals)
-                    .is_some_and(|value| type_of(&value, current_function, globals) == *arg_type)
-            }) {
-                let fn_ptr = current_function
-                    .pop(globals)
-                    .expect("stack len is checked above");
-
-                let mut args = Vec::new();
-                for _ in 0..arg_types.len() {
-                    args.push(
-                        current_function
-                            .pop(globals)
-                            .expect("stack len is checked above"),
-                    );
-                }
-                args.reverse();
-
-                let mut results = Vec::new();
-                for result_type in &result_types {
-                    let result_var = current_function.new_var(result_type.clone());
-                    current_function.push(Value::Variable(result_var));
-                    results.push(result_var);
-                }
-
-                current_function.add_instruction(Instruction::Call(
-                    fn_ptr,
-                    arg_types.clone(),
-                    args,
-                    result_types,
-                    results,
-                ));
-                return Result::Ok(());
+    if let Type::FnPtr(arg_types, result_types) =
+        ir::type_of(&called_value, current_function, globals)
+    {
+        if arg_types.iter().enumerate().all(|(i, arg_type)| {
+            current_function
+                .nth_from_top((arg_types.len() - i - 1) as i64, globals)
+                .is_some_and(|value| type_of(&value, current_function, globals) == *arg_type)
+        }) {
+            let mut args = Vec::new();
+            for _ in 0..arg_types.len() {
+                args.push(
+                    current_function
+                        .pop(globals)
+                        .expect("stack len is checked above"),
+                );
             }
-        }
-    }
+            args.reverse();
 
-    Result::Err(lexer.make_error_report(
-        location,
-        &format!(
-            "expected ... args fn, found {}",
-            current_function.stack_as_string(globals)
-        ),
-    ))
+            let mut results = Vec::new();
+            for result_type in &result_types {
+                let result_var = current_function.new_var(result_type.clone());
+                current_function.push(Value::Variable(result_var));
+                results.push(result_var);
+            }
+
+            current_function.add_instruction(Instruction::Call(
+                called_value,
+                arg_types.clone(),
+                args,
+                result_types,
+                results,
+            ));
+            Result::Ok(())
+        } else {
+            Result::Err(lexer.make_error_report(
+                location,
+                &format!(
+                    "expected ... {}, found {}",
+                    display_type_list(&arg_types, globals),
+                    current_function.stack_as_string(globals)
+                ),
+            ))
+        }
+    } else {
+        Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "expected ... fn, found {}",
+                current_function.stack_as_string(globals)
+            ),
+        ))
+    }
 }
 
 fn do_type_assertion(
@@ -451,6 +455,19 @@ fn compile_block(
             return Result::Err(lexer.make_error_report(location, "unreachable code"));
         }
 
+        if let Word::Id(id) = word {
+            if globals.functions.contains_key(id) {
+                compile_call(
+                    function,
+                    Value::Function(id.to_owned()),
+                    globals,
+                    lexer,
+                    location,
+                )?;
+                continue;
+            }
+        }
+
         match word {
             Word::Int(value) => {
                 function.push(Value::IntLiteral(value));
@@ -663,11 +680,19 @@ fn compile_block(
                 function.push(Value::Global(globals.new_lambda(lambda)));
             }
             Word::Id(")") => break,
-            Word::Id("call") => compile_call(function, globals, lexer, location)?,
+            Word::Id("call") => {
+                if let Some(called_value) = function.pop(globals) {
+                    compile_call(function, called_value, globals, lexer, location)?;
+                } else {
+                    return Result::Err(
+                        lexer.make_error_report(location, "no function on the stack"),
+                    );
+                }
+            }
             Word::Id("if") => compile_if(function, globals, lexer, location)?,
             Word::Id("loop") => compile_loop(function, globals, lexer, location)?,
             Word::Id("while") => compile_while(function, globals, lexer, location)?,
-            Word::Id("fn") => {
+            Word::Id("lambda") => {
                 lexer.consume_and_expect("(")?;
 
                 let (args, results) =
@@ -681,6 +706,29 @@ fn compile_block(
                     false,
                 )?;
                 function.push(Value::Global(globals.new_lambda(lambda)));
+            }
+            Word::Id("fn") => {
+                let (id, location) = lexer.consume_id()?;
+                if globals.functions.contains_key(id) {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!("function {id} was already defined"),
+                    ));
+                }
+
+                lexer.consume_and_expect("(")?;
+
+                let (args, results) =
+                    function.pop2_of_type(Type::List, Type::List, globals, location, lexer)?;
+                let new_function = compile_function(
+                    lexer,
+                    globals,
+                    args.unwrap_list_literal(),
+                    results.unwrap_list_literal(),
+                    false,
+                )?;
+
+                globals.functions.insert(id.to_owned(), new_function);
             }
             Word::Id("Int") => {
                 function.push(Value::Type(Type::Int));
@@ -744,11 +792,18 @@ pub fn compile_to_ir(lexer: &mut Lexer, globals: &mut Globals) -> Result<Functio
     let mut main = compile_function(lexer, globals, Vec::new(), Vec::new(), true)?;
 
     main = main.resolve_types(globals, lexer)?;
+
     globals.lambdas = globals
         .lambdas
         .iter()
         .map(|lambda| lambda.resolve_types(globals, lexer))
         .collect::<Result<Vec<Function>, String>>()?;
+
+    let mut functions = mem::take(&mut globals.functions);
+    for function in functions.values_mut() {
+        *function = function.resolve_types(globals, lexer)?;
+    }
+    globals.functions = functions;
 
     Result::Ok(main)
 }

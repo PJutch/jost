@@ -208,4 +208,19 @@ impl<'a, 'b> Lexer<'a, 'b> {
         self.current_byte = old_current_byte;
         false
     }
+
+    pub fn consume_id(&mut self) -> Result<(&'a str, Location), String> {
+        if let Some((word, location)) = self.next_word() {
+            if let Word::Id(id) = word {
+                Result::Ok((id, location))
+            } else {
+                Result::Err(self.make_error_report(location, "expected an id"))
+            }
+        } else {
+            Result::Err(self.make_error_report(
+                Location::char_at(self.current_byte as i64),
+                "expected an id, got eof",
+            ))
+        }
+    }
 }
