@@ -187,6 +187,15 @@ fn generate_instruction_llvm(
                 context.to_expression(b),
             ))
         }
+        Instruction::Relational32(op, a, b, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = icmp {} i32 {}, {}\n",
+                llvm_relational(*op),
+                context.to_expression(a),
+                context.to_expression(b),
+            ))
+        }
         Instruction::Logical(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             match op {
@@ -209,6 +218,8 @@ fn generate_instruction_llvm(
                 context.to_expression(value)
             ))
         }
+        Instruction::Print(_, _) => panic!("print instruction got to code gen"),
+        Instruction::Input(_, _, _) => panic!("input instruction got to code gen"),
         Instruction::Putstr(value) => {
             let var_number = context.next_var_number_anonymous();
             context.append(&format!(
@@ -229,27 +240,30 @@ fn generate_instruction_llvm(
             }
             context.append(")\n");
         }
-        Instruction::Input(type_, result_var) => match type_ {
-            Type::Int => todo!("implement input for ints"),
-            Type::Int32 => todo!("implement input for int32s"),
-            Type::String => {
-                let result_var_number = context.next_var_number(*result_var);
-                context.append(&format!(
-                    "%{result_var_number} = call ptr @gets_s(ptr @__string_buf, i64 256)\n"
-                ));
-            }
-            Type::Bool => {
+        Instruction::GetsS(buf, size, result_var) => {
+            context.append("    ");
+            if let Some(var) = result_var {
+                let var_number = context.next_var_number(*var);
+                context.append(&format!("%{var_number} = "));
+            } else {
                 context.next_var_number_anonymous();
-                let strcmp_result = context.next_var_number_anonymous();
-                let result_var_number = context.next_var_number(*result_var);
-                context.append("call void @gets_s(ptr @__string_buf, i64 256)\n");
-                context.append(&format!("%{strcmp_result} = call i32 @strcmp(ptr @__string_buf, ptr @__string_true)\n%{result_var_number} = icmp eq i32 %{strcmp_result}, 0"));
             }
-            Type::List => todo!("represent lists in runtime"),
-            Type::FnPtr(_, _) => todo!("pick a good place to put fn ptr error message"),
-            Type::Typ => panic!("types can't be used in runtime"),
-            Type::TypVar(_) => panic!("unresolved type var got to codegen"),
-        },
+            context.append("call ptr @gets_s(ptr ");
+            context.append(&context.to_expression(buf));
+            context.append(", i64 ");
+            context.append(&context.to_expression(size));
+            context.append(")\n");
+        }
+        Instruction::Strcmp(lhs, rhs, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append("    %");
+            context.append(&result_var_number.to_string());
+            context.append(" = call i32 @strcmp(ptr ");
+            context.append(&context.to_expression(lhs));
+            context.append(", ptr ");
+            context.append(&context.to_expression(rhs));
+            context.append(")\n");
+        }
         Instruction::Exit(value) => {
             context.next_var_number_anonymous();
             context.append(&format!(

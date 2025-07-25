@@ -567,73 +567,14 @@ fn compile_block(
             }
             Word::Id("print") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;
-                match type_of(&value, function, globals) {
-                    Type::Int => function.add_instruction(Instruction::Printf(
-                        Value::Global(globals.new_string("%lld\n")),
-                        [value].to_vec(),
-                    )),
-                    Type::Int32 => function.add_instruction(Instruction::Printf(
-                        Value::Global(globals.new_string("%d\n")),
-                        [value].to_vec(),
-                    )),
-                    Type::String => function.add_instruction(Instruction::Putstr(value)),
-                    Type::Bool => {
-                        function.new_scope(false);
-                        let then_scope = function.scopes.pop().expect("scope was created above");
-
-                        function.new_scope(false);
-                        let else_scope = function.scopes.pop().expect("scope was created above");
-
-                        let var = function.new_var(Type::String);
-                        function.add_instruction(Instruction::If(
-                            value,
-                            then_scope,
-                            else_scope,
-                            Vec::from([Phi {
-                                result_var: var,
-                                result_type: Type::String,
-                                case1: Value::Global(globals.new_string("true")),
-                                case2: Value::Global(globals.new_string("false")),
-                            }]),
-                        ));
-
-                        function.add_instruction(Instruction::Putstr(Value::Variable(var)));
-                    }
-                    Type::List => {
-                        if let Value::ListLiteral(types) = value {
-                            function.add_instruction(Instruction::Putstr(Value::Global(
-                                globals.new_string(&display_type_list(&types, globals)),
-                            )))
-                        } else {
-                            todo!("support list that aren't compile time lists of types")
-                        }
-                    }
-                    Type::FnPtr(arg_types, result_types) => function.add_instruction(
-                        Instruction::Putstr(Value::Global(globals.new_string(&format!(
-                            "fn ({}) -> ({})",
-                            display_type_list(&arg_types, globals),
-                            display_type_list(&result_types, globals)
-                        )))),
-                    ),
-                    Type::Typ => {
-                        if let Value::Type(type_) = value {
-                            function.add_instruction(Instruction::Putstr(Value::Global(
-                                globals.new_string(&display_type(&type_, globals)),
-                            )))
-                        } else {
-                            panic!("Only Value::Type can be pf type Type");
-                        }
-                    }
-                    Type::TypVar(_) => {
-                        return Result::Err("value of unknown type can't be printed".to_owned())
-                    }
-                }
+                let type_ = type_of(&value, function, globals);
+                function.add_instruction(Instruction::Print(value, type_));
             }
             Word::Id("input") => {
                 let type_ = Type::TypVar(globals.new_type_var(location));
                 let var = function.new_var(type_.clone());
                 function.push(Value::Variable(var));
-                function.add_instruction(Instruction::Input(type_, var));
+                function.add_instruction(Instruction::Input(var, type_, location));
             }
             Word::Id("exit") => {
                 let mut stack = Vec::new();
@@ -793,13 +734,13 @@ pub fn compile_to_ir(lexer: &mut Lexer, globals: &mut Globals) -> Result<Functio
 
     main = main.resolve_types(globals, lexer)?;
 
-    globals.lambdas = globals
-        .lambdas
-        .iter()
-        .map(|lambda| lambda.resolve_types(globals, lexer))
-        .collect::<Result<Vec<Function>, String>>()?;
+    let mut lambdas = globals.lambdas.clone();
+    for lambda in &mut lambdas {
+        *lambda = lambda.resolve_types(globals, lexer)?;
+    }
+    globals.lambdas = lambdas;
 
-    let mut functions = mem::take(&mut globals.functions);
+    let mut functions = globals.functions.clone();
     for function in functions.values_mut() {
         *function = function.resolve_types(globals, lexer)?;
     }
