@@ -13,6 +13,7 @@ pub enum Type {
     Int32,
     Bool,
     String,
+    Ptr(Box<Type>),
     FnPtr(Vec<Type>, Vec<Type>),
     List, // TODO: implement lists of type other than Type
     Typ,
@@ -223,6 +224,7 @@ impl DisplayTypesContext {
             Type::Int32 => "Int32".to_owned(),
             Type::Bool => "Bool".to_owned(),
             Type::String => "String".to_owned(),
+            Type::Ptr(type_) => format!("{} Ptr", self.display_type(type_.as_ref(), globals)),
             Type::FnPtr(arg_types, result_types) => {
                 format!(
                     "fn ({}) -> ({})",
@@ -728,6 +730,10 @@ pub enum Instruction {
     Logical(Logical, Value, Value, i64),
     Not(Value, i64),
 
+    Alloca(Value, Type, i64),
+    Load(Value, Type, i64),
+    Store(Value, Type, Value),
+
     Print(Value, Type),
     Input(i64, Type, Location),
 
@@ -781,60 +787,74 @@ impl Instruction {
             Self::Not(value, result_var) => {
                 Vec::from([Self::Not(value.resolve_types(globals, lexer)?, result_var)])
             }
-            Self::Print(value, type_) => match globals.resolve_actual_type(&type_, lexer)? {
-                Type::Int => Vec::from([Self::Printf(
-                    Value::Global(globals.new_string("%lld\n")),
-                    [value.resolve_types(globals, lexer)?].to_vec(),
-                )]),
-                Type::Int32 => Vec::from([Self::Printf(
-                    Value::Global(globals.new_string("%d\n")),
-                    [value.resolve_types(globals, lexer)?].to_vec(),
-                )]),
-                Type::String => Vec::from([Self::Putstr(value)]),
-                Type::Bool => {
-                    let var = function.new_var(Type::String);
-                    Vec::from([
-                        Self::If(
-                            value.resolve_types(globals, lexer)?,
-                            Scope::new(false),
-                            Scope::new(false),
-                            Vec::from([Phi {
-                                result_var: var,
-                                result_type: Type::String,
-                                case1: Value::Global(globals.new_string("true")),
-                                case2: Value::Global(globals.new_string("false")),
-                            }]),
-                        ),
-                        Self::Putstr(Value::Variable(var)),
-                    ])
-                }
-                Type::List => {
-                    if let Value::ListLiteral(types) = value.resolve_types(globals, lexer)? {
-                        Vec::from([Self::Putstr(Value::Global(
-                            globals.new_string(&display_type_list(&types, globals)),
-                        ))])
-                    } else {
-                        todo!("support list that aren't compile time lists of types")
+            Self::Alloca(value, type_, result_var) => Vec::from([Self::Alloca(
+                value.resolve_types(globals, lexer)?,
+                globals.resolve_actual_type(&type_, lexer)?,
+                result_var,
+            )]),
+            Self::Load(ptr, type_, result_var) => Vec::from([Self::Load(
+                ptr.resolve_types(globals, lexer)?,
+                globals.resolve_actual_type(&type_, lexer)?,
+                result_var,
+            )]),
+            Self::Store(ptr, type_, value) => Vec::from([Self::Store(
+                ptr.resolve_types(globals, lexer)?,
+                globals.resolve_actual_type(&type_, lexer)?,
+                value.resolve_types(globals, lexer)?,
+            )]),
+            Self::Print(value, type_) => {
+                let type_ = globals.resolve_actual_type(&type_, lexer)?;
+                match type_ {
+                    Type::Int => Vec::from([Self::Printf(
+                        Value::Global(globals.new_string("%lld\n")),
+                        [value.resolve_types(globals, lexer)?].to_vec(),
+                    )]),
+                    Type::Int32 => Vec::from([Self::Printf(
+                        Value::Global(globals.new_string("%d\n")),
+                        [value.resolve_types(globals, lexer)?].to_vec(),
+                    )]),
+                    Type::String => Vec::from([Self::Putstr(value)]),
+                    Type::Bool => {
+                        let var = function.new_var(Type::String);
+                        Vec::from([
+                            Self::If(
+                                value.resolve_types(globals, lexer)?,
+                                Scope::new(false),
+                                Scope::new(false),
+                                Vec::from([Phi {
+                                    result_var: var,
+                                    result_type: Type::String,
+                                    case1: Value::Global(globals.new_string("true")),
+                                    case2: Value::Global(globals.new_string("false")),
+                                }]),
+                            ),
+                            Self::Putstr(Value::Variable(var)),
+                        ])
                     }
-                }
-                Type::FnPtr(arg_types, result_types) => {
-                    Vec::from([Self::Putstr(Value::Global(globals.new_string(&format!(
-                        "fn ({}) -> ({})",
-                        display_type_list(&arg_types, globals),
-                        display_type_list(&result_types, globals)
-                    ))))])
-                }
-                Type::Typ => {
-                    if let Value::Type(type_) = value.resolve_types(globals, lexer)? {
-                        Vec::from([Self::Putstr(Value::Global(
-                            globals.new_string(&display_type(&type_, globals)),
-                        ))])
-                    } else {
-                        panic!("Only Value::Type can be pf type Type");
+                    Type::List => {
+                        if let Value::ListLiteral(types) = value.resolve_types(globals, lexer)? {
+                            Vec::from([Self::Putstr(Value::Global(
+                                globals.new_string(&display_type_list(&types, globals)),
+                            ))])
+                        } else {
+                            todo!("support list that aren't compile time lists of types")
+                        }
                     }
+                    Type::FnPtr(_, _) | Type::Ptr(_) => Vec::from([Self::Putstr(Value::Global(
+                        globals.new_string(&display_type(&type_, globals)),
+                    ))]),
+                    Type::Typ => {
+                        if let Value::Type(type_) = value.resolve_types(globals, lexer)? {
+                            Vec::from([Self::Putstr(Value::Global(
+                                globals.new_string(&display_type(&type_, globals)),
+                            ))])
+                        } else {
+                            panic!("Only Value::Type can be pf type Type");
+                        }
+                    }
+                    Type::TypVar(_) => panic!("resolve_actual_type returned type var"),
                 }
-                Type::TypVar(_) => panic!("resolve_actual_type returned type var"),
-            },
+            }
             Self::Putstr(value) => Vec::from([Self::Putstr(value.resolve_types(globals, lexer)?)]),
             Self::Printf(fmt_string, args) => Vec::from([Self::Printf(
                 fmt_string.resolve_types(globals, lexer)?,
@@ -873,7 +893,7 @@ impl Instruction {
                         ])
                     }
                     Type::List => todo!("represent lists in runtime"),
-                    Type::FnPtr(_, _) | Type::Typ => {
+                    Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
                         return Result::Err(lexer.make_error_report(
                             location,
                             &format!("can't input a {}", display_type(&type_, globals)),

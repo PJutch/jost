@@ -45,6 +45,11 @@ zeroed Int : print
 zeroed 1 + print
 zeroed Bool : print
 
+1 alloca
+dup load print
+dup 2 store
+load print
+
 input String : print
 input if ("got true" print) else ("didn't get true" print)
 

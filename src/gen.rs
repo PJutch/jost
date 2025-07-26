@@ -51,7 +51,7 @@ impl GenerationContext {
             Value::Zeroed(type_) => match type_ {
                 Type::Int | Type::Int32 => "0",
                 Type::Bool => "false",
-                Type::String | Type::FnPtr(_, _) => "null",
+                Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "null",
                 Type::List => todo!("represent lists in runtime"),
                 Type::Typ => panic!("types can't be used in runtime"),
                 Type::TypVar(_) => panic!("unresolved type var got to code gen"),
@@ -137,9 +137,8 @@ fn to_llvm_type(type_: &Type) -> &'static str {
         Type::Int => "i64",
         Type::Int32 => "i32",
         Type::Bool => "i1",
-        Type::String => "ptr",
+        Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "ptr",
         Type::List => panic!("represent lists in runtime"),
-        Type::FnPtr(_, _) => "ptr",
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }
@@ -217,6 +216,34 @@ fn generate_instruction_llvm(
                 "    %{result_var_number} = icmp eq i1 {}, false\n",
                 context.to_expression(value)
             ))
+        }
+        Instruction::Alloca(value, type_, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = alloca {}\n",
+                to_llvm_type(type_)
+            ));
+            context.append(&format!(
+                "    store {} {}, ptr %{result_var_number}\n",
+                to_llvm_type(type_),
+                context.to_expression(value)
+            ));
+        }
+        Instruction::Load(ptr, type_, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = load {}, ptr {}\n",
+                to_llvm_type(type_),
+                context.to_expression(ptr)
+            ));
+        }
+        Instruction::Store(ptr, type_, value) => {
+            context.append(&format!(
+                "    store {} {}, ptr {}\n",
+                to_llvm_type(type_),
+                context.to_expression(value),
+                context.to_expression(ptr)
+            ));
         }
         Instruction::Print(_, _) => panic!("print instruction got to code gen"),
         Instruction::Input(_, _, _) => panic!("input instruction got to code gen"),

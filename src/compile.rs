@@ -443,6 +443,32 @@ fn compile_return(
     }
 }
 
+fn compile_store(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(ptr) = function.nth_from_top(1, globals) {
+        if let Type::Ptr(value_type) = type_of(&ptr, function, globals) {
+            if let Some(value) = function.nth_from_top(0, globals) {
+                if globals.merge_types(&type_of(&value, function, globals), &value_type) {
+                    let (ptr, value) = function.pop2_of_any_type(globals, location, lexer)?;
+                    function.add_instruction(Instruction::Store(ptr, *value_type, value));
+                    return Result::Ok(());
+                }
+            }
+        }
+    }
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected A Ptr A, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -680,6 +706,36 @@ fn compile_block(
             Word::Id("Bool") => {
                 function.push(Value::Type(Type::Bool));
             }
+            Word::Id("Ptr") => {
+                let type_ = function
+                    .pop_of_type(Type::Typ, globals, location, lexer)?
+                    .unwrap_type();
+                function.push(Value::Type(Type::Ptr(Box::from(type_))));
+            }
+            Word::Id("alloca") => {
+                let value = function.pop_of_any_type(globals, location, lexer)?;
+                let type_ = type_of(&value, function, globals);
+                let result_var = function.new_var(Type::Ptr(Box::from(type_.clone())));
+                function.add_instruction(Instruction::Alloca(value, type_, result_var));
+                function.push(Value::Variable(result_var));
+            }
+            Word::Id("load") => {
+                let ptr = function.pop_of_any_type(globals, location, lexer)?;
+                if let Type::Ptr(value_type) = type_of(&ptr, function, globals) {
+                    let result_var = function.new_var(value_type.as_ref().clone());
+                    function.add_instruction(Instruction::Load(ptr, *value_type, result_var));
+                    function.push(Value::Variable(result_var));
+                } else {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "expected A Ptr, found {}",
+                            function.stack_as_string(globals)
+                        ),
+                    ));
+                }
+            }
+            Word::Id("store") => compile_store(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
                 return Err(lexer.make_error_report(location, &format!("Unknown word {id}")))
