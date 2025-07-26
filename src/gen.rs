@@ -44,7 +44,7 @@ impl GenerationContext {
         match value {
             Value::IntLiteral(value) => value.to_string(),
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
-            Value::ListLiteral(_) => todo!("represent lists in runtime"),
+            Value::Tuple(_, _) => todo!("build tuples of values"),
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
@@ -52,7 +52,7 @@ impl GenerationContext {
                 Type::Int | Type::Int32 => "0",
                 Type::Bool => "false",
                 Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "null",
-                Type::List => todo!("represent lists in runtime"),
+                Type::Tuple(_) => todo!("build tuples of values"),
                 Type::Typ => panic!("types can't be used in runtime"),
                 Type::TypVar(_) => panic!("unresolved type var got to code gen"),
             }
@@ -64,7 +64,7 @@ impl GenerationContext {
         match value {
             Value::IntLiteral(_) => panic!("trying to call int literal"),
             Value::BoolLiteral(_) => panic!("trying to call bool literal"),
-            Value::ListLiteral(_) => panic!("trying to call a list literal"),
+            Value::Tuple(_, _) => panic!("trying to call a tuple"),
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
@@ -132,13 +132,26 @@ pub fn llvm_relational(op: Relational) -> &'static str {
     }
 }
 
-fn to_llvm_type(type_: &Type) -> &'static str {
+fn to_llvm_type(type_: &Type) -> String {
     match type_ {
-        Type::Int => "i64",
-        Type::Int32 => "i32",
-        Type::Bool => "i1",
-        Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "ptr",
-        Type::List => panic!("represent lists in runtime"),
+        Type::Int => "i64".to_owned(),
+        Type::Int32 => "i32".to_owned(),
+        Type::Bool => "i1".to_owned(),
+        Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "ptr".to_owned(),
+        Type::Tuple(types) => {
+            let mut type_string = "{".to_owned();
+            for (i, type_) in types.iter().enumerate() {
+                if i > 0 {
+                    type_string += ",";
+                } else {
+                    type_string += " ";
+                }
+                type_string += &to_llvm_type(type_);
+                type_string += " ";
+            }
+            type_string += "}";
+            type_string
+        }
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }
@@ -151,7 +164,7 @@ fn to_llvm_type_multiple(types: &[Type]) -> String {
                 result += ", ";
             }
 
-            result += to_llvm_type(type_);
+            result += &to_llvm_type(type_);
         }
         result += " }";
         result
@@ -517,7 +530,7 @@ fn generate_llvm_sig(name: &str, function: &Function, context: &mut GenerationCo
         if i > 0 {
             context.append(", ");
         }
-        context.append(to_llvm_type(arg_type));
+        context.append(&to_llvm_type(arg_type));
 
         context.append(" %");
         context.append(&(i + 1).to_string());

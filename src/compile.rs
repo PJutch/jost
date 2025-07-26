@@ -469,6 +469,34 @@ fn compile_store(
     ))
 }
 
+fn compile_append(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(value) = function.nth_from_top(0, globals) {
+        if let Some(Value::Tuple(mut values, mut types)) = function.nth_from_top(1, globals) {
+            function.pop(globals).expect("stack is checked above");
+            function.pop(globals).expect("stack is checked above");
+
+            types.push(type_of(&value, function, globals));
+            values.push(value);
+
+            function.push(Value::Tuple(values, types));
+            return Result::Ok(());
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected ... ... Tuple Value, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -630,18 +658,9 @@ fn compile_block(
             }
             Word::Id("return") => compile_return(function, globals, lexer, location)?,
             Word::Id("[]") => {
-                function.push(Value::ListLiteral(Vec::new()));
+                function.push(Value::Tuple(Vec::new(), Vec::new()));
             }
-            Word::Id(",") => {
-                // TODO: support lists of type other than type
-                let (list, value) =
-                    function.pop2_of_type(Type::List, Type::Typ, globals, location, lexer)?;
-
-                let value = value.unwrap_type();
-                let mut list = list.unwrap_list_literal();
-                list.push(value);
-                function.push(Value::ListLiteral(list));
-            }
+            Word::Id(",") => compile_append(function, globals, lexer, location)?,
             Word::Id("(") => {
                 let lambda = compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));
@@ -661,17 +680,8 @@ fn compile_block(
             Word::Id("while") => compile_while(function, globals, lexer, location)?,
             Word::Id("lambda") => {
                 lexer.consume_and_expect("(")?;
-
-                let (args, results) =
-                    function.pop2_of_type(Type::List, Type::List, globals, location, lexer)?;
-
-                let lambda = compile_function(
-                    lexer,
-                    globals,
-                    args.unwrap_list_literal(),
-                    results.unwrap_list_literal(),
-                    false,
-                )?;
+                let (args, results) = function.pop_signature(globals, lexer, location)?;
+                let lambda = compile_function(lexer, globals, args, results, false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));
             }
             Word::Id("fn") => {
@@ -685,16 +695,8 @@ fn compile_block(
 
                 lexer.consume_and_expect("(")?;
 
-                let (args, results) =
-                    function.pop2_of_type(Type::List, Type::List, globals, location, lexer)?;
-                let new_function = compile_function(
-                    lexer,
-                    globals,
-                    args.unwrap_list_literal(),
-                    results.unwrap_list_literal(),
-                    false,
-                )?;
-
+                let (args, results) = function.pop_signature(globals, lexer, location)?;
+                let new_function = compile_function(lexer, globals, args, results, false)?;
                 globals.functions.insert(id.to_owned(), new_function);
             }
             Word::Id("Int") => {
