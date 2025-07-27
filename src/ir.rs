@@ -31,6 +31,7 @@ pub enum Value {
     Global(String),
     Function(String),
     Zeroed(Type),
+    Undefined,
 }
 
 impl Value {
@@ -41,18 +42,39 @@ impl Value {
         }
     }
 
-    fn resolve_types(self, globals: &Globals, lexer: &Lexer) -> Result<Self, String> {
+    fn resolve_types(
+        self,
+        function: &mut Function,
+        globals: &Globals,
+        lexer: &Lexer,
+    ) -> Result<Self, String> {
         Result::Ok(match self {
-            Self::Tuple(values, types) => Self::Tuple(
-                values
+            Self::Tuple(values, types) => {
+                let values = values
                     .into_iter()
-                    .map(|value| value.resolve_types(globals, lexer))
-                    .collect::<Result<Vec<Value>, String>>()?,
-                types
-                    .iter()
-                    .map(|type_| globals.resolve_actual_type(type_, lexer))
-                    .collect::<Result<Vec<Type>, String>>()?,
-            ),
+                    .map(|value| value.resolve_types(function, globals, lexer))
+                    .collect::<Result<Vec<Value>, String>>()?;
+                let self_type = Type::Tuple(
+                    types
+                        .iter()
+                        .map(|type_| globals.resolve_actual_type(type_, lexer))
+                        .collect::<Result<Vec<Type>, String>>()?,
+                );
+
+                let mut built_tuple = Value::Undefined;
+                for (i, value) in values.into_iter().enumerate() {
+                    let next_var = function.new_var(self_type.clone());
+                    function.add_instruction(Instruction::InsertValue(
+                        built_tuple,
+                        self_type.clone(),
+                        value,
+                        i as i64,
+                        next_var,
+                    ));
+                    built_tuple = Self::Variable(next_var);
+                }
+                built_tuple
+            }
             Self::Type(type_) => Self::Type(globals.resolve_actual_type(&type_, lexer)?),
             Self::Zeroed(type_) => Self::Zeroed(globals.resolve_actual_type(&type_, lexer)?),
             _ => self,
@@ -712,6 +734,7 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
                 .collect(),
         ),
         Value::Zeroed(type_) => globals.resolve_type(type_),
+        Value::Undefined => todo!("make undefined know its type"),
     }
 }
 
@@ -749,12 +772,17 @@ pub struct Phi {
 }
 
 impl Phi {
-    fn resolve_types(self, globals: &Globals, lexer: &Lexer) -> Result<Self, String> {
+    fn resolve_types(
+        self,
+        function: &mut Function,
+        globals: &mut Globals,
+        lexer: &Lexer,
+    ) -> Result<Self, String> {
         Result::Ok(Phi {
             result_var: self.result_var,
             result_type: globals.resolve_type(&self.result_type),
-            case1: self.case1.resolve_types(globals, lexer)?,
-            case2: self.case2.resolve_types(globals, lexer)?,
+            case1: self.case1.resolve_types(function, globals, lexer)?,
+            case2: self.case2.resolve_types(function, globals, lexer)?,
         })
     }
 }
@@ -773,6 +801,9 @@ pub enum Instruction {
     Alloca(Value, Type, i64),
     Load(Value, Type, i64),
     Store(Value, Type, Value),
+
+    InsertValue(Value, Type, Value, i64, i64),
+    ExtractValue(Value, Type, i64, i64),
 
     Print(Value, Type),
     Input(i64, Type, Location),
@@ -798,20 +829,30 @@ fn resolve_print(
     globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<(), String> {
-    match type_ {
-        Type::Int => function.add_instruction(Instruction::Printf(
-            Value::Global(globals.new_string("%lld\n")),
-            [value.resolve_types(globals, lexer)?].to_vec(),
-        )),
-        Type::Int32 => function.add_instruction(Instruction::Printf(
-            Value::Global(globals.new_string("%d\n")),
-            [value.resolve_types(globals, lexer)?].to_vec(),
-        )),
-        Type::String => function.add_instruction(Instruction::Putstr(value)),
+    match type_.clone() {
+        Type::Int => {
+            let value = value.resolve_types(function, globals, lexer)?;
+            function.add_instruction(Instruction::Printf(
+                Value::Global(globals.new_string("%lld\n")),
+                [value].to_vec(),
+            ))
+        }
+        Type::Int32 => {
+            let value = value.resolve_types(function, globals, lexer)?;
+            function.add_instruction(Instruction::Printf(
+                Value::Global(globals.new_string("%d\n")),
+                [value].to_vec(),
+            ))
+        }
+        Type::String => {
+            let value = value.resolve_types(function, globals, lexer)?;
+            function.add_instruction(Instruction::Putstr(value))
+        }
         Type::Bool => {
             let var = function.new_var(Type::String);
+            let value = value.resolve_types(function, globals, lexer)?;
             function.add_instruction(Instruction::If(
-                value.resolve_types(globals, lexer)?,
+                value,
                 Scope::new(false),
                 Scope::new(false),
                 Vec::from([Phi {
@@ -823,20 +864,30 @@ fn resolve_print(
             ));
             function.add_instruction(Instruction::Putstr(Value::Variable(var)));
         }
-        Type::Tuple(_) => {
-            if let Value::Tuple(values, types) = value.resolve_types(globals, lexer)? {
-                for (value, type_) in values.into_iter().zip(types.into_iter()) {
-                    resolve_print(value, type_, function, globals, lexer)?;
-                }
-            } else {
-                panic!("tuple isn't a Value::Tuple");
+        Type::Tuple(types) => {
+            let value = value.resolve_types(function, globals, lexer)?;
+            for (i, element_type) in types.into_iter().enumerate() {
+                let element_var = function.new_var(element_type.clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    value.clone(),
+                    type_.clone(),
+                    i as i64,
+                    element_var,
+                ));
+                resolve_print(
+                    Value::Variable(element_var),
+                    element_type,
+                    function,
+                    globals,
+                    lexer,
+                )?;
             }
         }
         Type::FnPtr(_, _) | Type::Ptr(_) => function.add_instruction(Instruction::Putstr(
             Value::Global(globals.new_string(&display_type(&type_, globals))),
         )),
         Type::Typ => {
-            if let Value::Type(type_) = value.resolve_types(globals, lexer)? {
+            if let Value::Type(type_) = value.resolve_types(function, globals, lexer)? {
                 function.add_instruction(Instruction::Putstr(Value::Global(
                     globals.new_string(&display_type(&type_, globals)),
                 )));
@@ -906,79 +957,106 @@ impl Instruction {
         match self {
             Self::Bogus => panic!("bogus instruction got to type resolution"),
             Self::Arithemtic(op, lhs, rhs, result_var) => {
-                function.add_instruction(Self::Arithemtic(
-                    op,
-                    lhs.resolve_types(globals, lexer)?,
-                    rhs.resolve_types(globals, lexer)?,
-                    result_var,
-                ))
+                let lhs = lhs.resolve_types(function, globals, lexer)?;
+                let rhs = rhs.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Arithemtic(op, lhs, rhs, result_var))
             }
             Self::Relational(op, lhs, rhs, result_var) => {
-                function.add_instruction(Self::Relational(
-                    op,
-                    lhs.resolve_types(globals, lexer)?,
-                    rhs.resolve_types(globals, lexer)?,
-                    result_var,
-                ))
+                let lhs = lhs.resolve_types(function, globals, lexer)?;
+                let rhs = rhs.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Relational(op, lhs, rhs, result_var))
             }
             Self::Relational32(op, lhs, rhs, result_var) => {
-                function.add_instruction(Self::Relational32(
-                    op,
-                    lhs.resolve_types(globals, lexer)?,
-                    rhs.resolve_types(globals, lexer)?,
+                let lhs = lhs.resolve_types(function, globals, lexer)?;
+                let rhs = rhs.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Relational32(op, lhs, rhs, result_var))
+            }
+            Self::Logical(op, lhs, rhs, result_var) => {
+                let lhs = lhs.resolve_types(function, globals, lexer)?;
+                let rhs = rhs.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Logical(op, lhs, rhs, result_var))
+            }
+            Self::Not(value, result_var) => {
+                let value = value.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Not(value, result_var))
+            }
+            Self::Alloca(value, type_, result_var) => {
+                let value = value.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Alloca(
+                    value,
+                    globals.resolve_actual_type(&type_, lexer)?,
                     result_var,
                 ))
             }
-            Self::Logical(op, lhs, rhs, result_var) => function.add_instruction(Self::Logical(
-                op,
-                lhs.resolve_types(globals, lexer)?,
-                rhs.resolve_types(globals, lexer)?,
-                result_var,
-            )),
-            Self::Not(value, result_var) => function
-                .add_instruction(Self::Not(value.resolve_types(globals, lexer)?, result_var)),
-            Self::Alloca(value, type_, result_var) => function.add_instruction(Self::Alloca(
-                value.resolve_types(globals, lexer)?,
-                globals.resolve_actual_type(&type_, lexer)?,
-                result_var,
-            )),
-            Self::Load(ptr, type_, result_var) => function.add_instruction(Self::Load(
-                ptr.resolve_types(globals, lexer)?,
-                globals.resolve_actual_type(&type_, lexer)?,
-                result_var,
-            )),
-            Self::Store(ptr, type_, value) => function.add_instruction(Self::Store(
-                ptr.resolve_types(globals, lexer)?,
-                globals.resolve_actual_type(&type_, lexer)?,
-                value.resolve_types(globals, lexer)?,
-            )),
+            Self::Load(ptr, type_, result_var) => {
+                let ptr = ptr.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Load(
+                    ptr,
+                    globals.resolve_actual_type(&type_, lexer)?,
+                    result_var,
+                ))
+            }
+            Self::Store(ptr, type_, value) => {
+                let ptr = ptr.resolve_types(function, globals, lexer)?;
+                let value = value.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Store(
+                    ptr,
+                    globals.resolve_actual_type(&type_, lexer)?,
+                    value,
+                ))
+            }
+            Self::InsertValue(tuple, tuple_type, value, index, result_var) => {
+                let tuple = tuple.resolve_types(function, globals, lexer)?;
+                let value = value.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::InsertValue(
+                    tuple,
+                    globals.resolve_actual_type(&tuple_type, lexer)?,
+                    value,
+                    index,
+                    result_var,
+                ))
+            }
+            Self::ExtractValue(tuple, tuple_type, index, result_var) => {
+                let tuple = tuple.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::ExtractValue(
+                    tuple,
+                    globals.resolve_actual_type(&tuple_type, lexer)?,
+                    index,
+                    result_var,
+                ))
+            }
             Self::Print(value, type_) => resolve_print(value, type_, function, globals, lexer)?,
             Self::Putstr(value) => {
-                function.add_instruction(Self::Putstr(value.resolve_types(globals, lexer)?))
+                let value = value.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Putstr(value))
             }
-            Self::Printf(fmt_string, args) => function.add_instruction(Self::Printf(
-                fmt_string.resolve_types(globals, lexer)?,
-                args.into_iter()
-                    .map(|arg| arg.resolve_types(globals, lexer))
-                    .collect::<Result<Vec<Value>, String>>()?,
-            )),
+            Self::Printf(fmt_string, args) => {
+                let fmt_string = fmt_string.resolve_types(function, globals, lexer)?;
+                let args = args
+                    .into_iter()
+                    .map(|arg| arg.resolve_types(function, globals, lexer))
+                    .collect::<Result<Vec<Value>, String>>()?;
+                function.add_instruction(Self::Printf(fmt_string, args))
+            }
             Self::Input(result_var, type_, location) => {
                 resolve_input(type_, result_var, location, function, globals, lexer)?
             }
-            Self::GetsS(buf, size, result_var) => function.add_instruction(Self::GetsS(
-                buf.resolve_types(globals, lexer)?,
-                size.resolve_types(globals, lexer)?,
-                result_var,
-            )),
-            Self::Strcmp(lhs, rhs, result_var) => function.add_instruction(Self::Strcmp(
-                lhs.resolve_types(globals, lexer)?,
-                rhs.resolve_types(globals, lexer)?,
-                result_var,
-            )),
+            Self::GetsS(buf, size, result_var) => {
+                let buf = buf.resolve_types(function, globals, lexer)?;
+                let size = size.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::GetsS(buf, size, result_var))
+            }
+            Self::Strcmp(lhs, rhs, result_var) => {
+                let lhs = lhs.resolve_types(function, globals, lexer)?;
+                let rhs = rhs.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Strcmp(lhs, rhs, result_var))
+            }
             Self::Exit(value) => {
-                function.add_instruction(Self::Exit(value.resolve_types(globals, lexer)?))
+                let value = value.resolve_types(function, globals, lexer)?;
+                function.add_instruction(Self::Exit(value))
             }
             Self::Call(fn_ptr, arg_types, arg_values, result_types, result_vars) => {
+                let fn_ptr = fn_ptr.resolve_types(function, globals, lexer)?;
                 let mut new_arg_types = Vec::with_capacity(arg_types.len());
                 for arg_type in arg_types {
                     new_arg_types.push(globals.resolve_actual_type(&arg_type, lexer)?);
@@ -990,7 +1068,7 @@ impl Instruction {
                 }
 
                 function.add_instruction(Self::Call(
-                    fn_ptr.resolve_types(globals, lexer)?,
+                    fn_ptr,
                     new_arg_types,
                     arg_values,
                     new_result_types,
@@ -1002,22 +1080,22 @@ impl Instruction {
                 for type_ in types {
                     new_types.push(globals.resolve_actual_type(&type_, lexer)?);
                 }
-                function.add_instruction(Self::Return(
-                    values
-                        .into_iter()
-                        .map(|value| value.resolve_types(globals, lexer))
-                        .collect::<Result<Vec<Value>, String>>()?,
-                    new_types,
-                ))
+
+                let values = values
+                    .into_iter()
+                    .map(|value| value.resolve_types(function, globals, lexer))
+                    .collect::<Result<Vec<Value>, String>>()?;
+
+                function.add_instruction(Self::Return(values, new_types))
             }
             Self::If(condition, then_scope, else_scope, phis) => {
                 let mut new_phis = Vec::with_capacity(phis.len());
                 for phi in phis {
-                    new_phis.push(phi.resolve_types(globals, lexer)?)
+                    new_phis.push(phi.resolve_types(function, globals, lexer)?)
                 }
 
                 let instruction = Self::If(
-                    condition.resolve_types(globals, lexer)?,
+                    condition.resolve_types(function, globals, lexer)?,
                     then_scope.resolve_types(function, globals, lexer)?,
                     else_scope.resolve_types(function, globals, lexer)?,
                     new_phis,
@@ -1027,7 +1105,7 @@ impl Instruction {
             Self::Loop(phis, body_scope) => {
                 let mut new_phis = Vec::with_capacity(phis.len());
                 for phi in phis {
-                    new_phis.push(phi.resolve_types(globals, lexer)?)
+                    new_phis.push(phi.resolve_types(function, globals, lexer)?)
                 }
 
                 let instruction = Self::Loop(
@@ -1039,13 +1117,13 @@ impl Instruction {
             Self::While(phis, test_scope, test, body_scope) => {
                 let mut new_phis = Vec::with_capacity(phis.len());
                 for phi in phis {
-                    new_phis.push(phi.resolve_types(globals, lexer)?)
+                    new_phis.push(phi.resolve_types(function, globals, lexer)?)
                 }
 
                 let instruction = Self::While(
                     new_phis,
                     test_scope.resolve_types(function, globals, lexer)?,
-                    test.resolve_types(globals, lexer)?,
+                    test.resolve_types(function, globals, lexer)?,
                     body_scope.resolve_types(function, globals, lexer)?,
                 );
                 function.add_instruction(instruction);

@@ -57,6 +57,7 @@ impl GenerationContext {
                 Type::TypVar(_) => panic!("unresolved type var got to code gen"),
             }
             .to_owned(),
+            Value::Undefined => "undef".to_owned(),
         }
     }
 
@@ -69,6 +70,7 @@ impl GenerationContext {
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Zeroed(_) => "null".to_owned(),
+            Value::Undefined => "undef".to_owned(),
         }
     }
 
@@ -256,6 +258,30 @@ fn generate_instruction_llvm(
                 to_llvm_type(type_),
                 context.to_expression(value),
                 context.to_expression(ptr)
+            ));
+        }
+        Instruction::InsertValue(tuple, tuple_type, value, index, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            let value_type = if let Type::Tuple(element_types) = tuple_type {
+                &element_types[*index as usize]
+            } else {
+                panic!("InsertValue target isn't a tuple")
+            };
+
+            context.append(&format!(
+                "    %{result_var_number} = insertvalue {} {}, {} {}, {index}\n",
+                to_llvm_type(tuple_type),
+                context.to_expression(tuple),
+                to_llvm_type(value_type),
+                context.to_expression(value),
+            ));
+        }
+        Instruction::ExtractValue(tuple, tuple_type, index, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = extractvalue {} {}, {index}\n",
+                to_llvm_type(tuple_type),
+                context.to_expression(tuple),
             ));
         }
         Instruction::Print(_, _) => panic!("print instruction got to code gen"),

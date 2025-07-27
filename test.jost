@@ -50,6 +50,9 @@ dup load print
 dup 2 store
 load print
 
+[] 1 , 2 , 3 , print
+[] 5 , "hello" , print
+
 input String : print
 input if ("got true" print) else ("didn't get true" print)
 
