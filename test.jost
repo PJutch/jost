@@ -50,7 +50,13 @@ dup load print
 dup 2 store
 load print
 
-[] 1 , 2 , 3 , print
+"tuple tests" print
+
+[] 1 , 2 , 3 , dup print
+dup 2 at print
+10 2 setat dup print
+"test" 2 setat print
+
 [] 5 , "hello" , print
 
 input String : print

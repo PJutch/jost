@@ -497,6 +497,99 @@ fn compile_append(
     ))
 }
 
+fn compile_at(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(tuple) = function.nth_from_top(1, globals) {
+        let type_ = type_of(&tuple, function, globals);
+        if let Type::Tuple(types) = type_.clone() {
+            if let Some(Value::IntLiteral(index)) = function.nth_from_top(0, globals) {
+                if index >= 0 {
+                    if let Some(value_type) = types.get(index as usize) {
+                        function.pop(globals).expect("stack is checked above");
+                        function.pop(globals).expect("stack is checked above");
+
+                        let result_var = function.new_var(value_type.clone());
+                        function.push(Value::Variable(result_var));
+                        function.add_instruction(Instruction::ExtractValue(
+                            tuple,
+                            type_.clone(),
+                            index,
+                            result_var,
+                        ));
+                        return Result::Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected ... Tuple ConstantIndex, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_set_at(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(tuple) = function.nth_from_top(2, globals) {
+        let type_ = type_of(&tuple, function, globals);
+        if let Type::Tuple(types) = type_.clone() {
+            if let Some(value) = function.nth_from_top(1, globals) {
+                if let Some(Value::IntLiteral(index)) = function.nth_from_top(0, globals) {
+                    if index >= 0 && index as (usize) < types.len() {
+                        function.pop(globals).expect("stack is checked above");
+                        function.pop(globals).expect("stack is checked above");
+                        function.pop(globals).expect("stack is checked above");
+
+                        let mut new_values = Vec::new();
+                        let mut new_types = Vec::new();
+
+                        for (i, old_type) in types.into_iter().enumerate() {
+                            if i == index as usize {
+                                new_values.push(value.clone());
+                                new_types.push(type_of(&value, function, globals));
+                            } else {
+                                let result_var = function.new_var(old_type.clone());
+                                function.add_instruction(Instruction::ExtractValue(
+                                    tuple.clone(),
+                                    type_.clone(),
+                                    i as i64,
+                                    result_var,
+                                ));
+                                new_values.push(Value::Variable(result_var));
+
+                                new_types.push(old_type);
+                            }
+                        }
+
+                        function.push(Value::Tuple(new_values, new_types));
+                        return Result::Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected ... Tuple Value ConstantIndex, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -661,6 +754,8 @@ fn compile_block(
                 function.push(Value::Tuple(Vec::new(), Vec::new()));
             }
             Word::Id(",") => compile_append(function, globals, lexer, location)?,
+            Word::Id("at") => compile_at(function, globals, lexer, location)?,
+            Word::Id("setat") => compile_set_at(function, globals, lexer, location)?,
             Word::Id("(") => {
                 let lambda = compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));
