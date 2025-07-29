@@ -756,6 +756,10 @@ fn compile_block(
             Word::Id(",") => compile_append(function, globals, lexer, location)?,
             Word::Id("at") => compile_at(function, globals, lexer, location)?,
             Word::Id("setat") => compile_set_at(function, globals, lexer, location)?,
+            Word::Id("len") => {
+                let tuple = function.pop_of_any_type(globals, location, lexer)?;
+                function.push(Value::Length(Box::new(tuple), location));
+            }
             Word::Id("(") => {
                 let lambda = compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));

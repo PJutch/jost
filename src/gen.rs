@@ -58,6 +58,7 @@ impl GenerationContext {
             }
             .to_owned(),
             Value::Undefined => "undef".to_owned(),
+            Value::Length(_, _) => panic!("length value got to code gen"),
         }
     }
 
@@ -71,6 +72,7 @@ impl GenerationContext {
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Zeroed(_) => "null".to_owned(),
             Value::Undefined => "undef".to_owned(),
+            Value::Length(_, _) => panic!("length value got to code gen"),
         }
     }
 

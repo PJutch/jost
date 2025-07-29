@@ -32,6 +32,7 @@ pub enum Value {
     Function(String),
     Zeroed(Type),
     Undefined,
+    Length(Box<Value>, Location),
 }
 
 impl Value {
@@ -77,6 +78,18 @@ impl Value {
             }
             Self::Type(type_) => Self::Type(globals.resolve_actual_type(&type_, lexer)?),
             Self::Zeroed(type_) => Self::Zeroed(globals.resolve_actual_type(&type_, lexer)?),
+            Self::Length(value, location) => {
+                let value = value.resolve_types(function, globals, lexer)?;
+                let type_ = type_of(&value, function, globals);
+                if let Type::Tuple(types) = type_ {
+                    Self::IntLiteral(types.len() as i64)
+                } else {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!("expected Tuple, found {}", display_type(&type_, globals)),
+                    ));
+                }
+            }
             _ => self,
         })
     }
@@ -714,7 +727,7 @@ pub fn print_ir(function: &Function, globals: &Globals) {
 
 pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
     match value {
-        Value::IntLiteral(_) => Type::Int,
+        Value::IntLiteral(_) | Value::Length(_, _) => Type::Int,
         Value::BoolLiteral(_) => Type::Bool,
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
         Value::Type(_) => Type::Typ,
