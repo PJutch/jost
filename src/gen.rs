@@ -43,21 +43,14 @@ impl GenerationContext {
     fn to_expression(&self, value: &Value) -> String {
         match value {
             Value::IntLiteral(value) => value.to_string(),
+            Value::Int32Literal(value) => value.to_string(),
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
             Value::Tuple(_, _) => todo!("build tuples of values"),
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
-            Value::Zeroed(type_) => match type_ {
-                Type::Int | Type::Int32 => "0",
-                Type::Bool => "false",
-                Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "null",
-                Type::Tuple(_) => todo!("build tuples of values"),
-                Type::Typ => panic!("types can't be used in runtime"),
-                Type::TypVar(_) => panic!("unresolved type var got to code gen"),
-            }
-            .to_owned(),
             Value::Undefined => "undef".to_owned(),
+            Value::Zeroed(_, _) => panic!("zeroed value got to code gen"),
             Value::Length(_, _) => panic!("length value got to code gen"),
         }
     }
@@ -65,12 +58,13 @@ impl GenerationContext {
     fn to_callable(&self, value: &Value) -> String {
         match value {
             Value::IntLiteral(_) => panic!("trying to call int literal"),
+            Value::Int32Literal(_) => panic!("trying to call int32 literal"),
             Value::BoolLiteral(_) => panic!("trying to call bool literal"),
             Value::Tuple(_, _) => panic!("trying to call a tuple"),
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
-            Value::Zeroed(_) => "null".to_owned(),
+            Value::Zeroed(_, _) => "null".to_owned(),
             Value::Undefined => "undef".to_owned(),
             Value::Length(_, _) => panic!("length value got to code gen"),
         }

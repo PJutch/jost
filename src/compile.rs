@@ -685,7 +685,10 @@ fn compile_block(
                 function.push(Value::BoolLiteral(false));
             }
             Word::Id("zeroed") => {
-                function.push(Value::Zeroed(Type::TypVar(globals.new_type_var(location))));
+                function.push(Value::Zeroed(
+                    Type::TypVar(globals.new_type_var(location)),
+                    location,
+                ));
             }
             Word::Id("dup") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;

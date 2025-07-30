@@ -23,6 +23,7 @@ pub enum Type {
 #[derive(Clone, Debug)]
 pub enum Value {
     IntLiteral(i64),
+    Int32Literal(i32),
     BoolLiteral(bool),
     Tuple(Vec<Value>, Vec<Type>),
     Type(Type),
@@ -30,7 +31,7 @@ pub enum Value {
     Arg(i64),
     Global(String),
     Function(String),
-    Zeroed(Type),
+    Zeroed(Type, Location),
     Undefined,
     Length(Box<Value>, Location),
 }
@@ -77,7 +78,32 @@ impl Value {
                 built_tuple
             }
             Self::Type(type_) => Self::Type(globals.resolve_actual_type(&type_, lexer)?),
-            Self::Zeroed(type_) => Self::Zeroed(globals.resolve_actual_type(&type_, lexer)?),
+            Self::Zeroed(type_, location) => match globals.resolve_actual_type(&type_, lexer)? {
+                Type::Int => Self::IntLiteral(0),
+                Type::Int32 => Self::Int32Literal(0),
+                Type::Bool => Self::BoolLiteral(false),
+                Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "Value of type {} can't be null",
+                            display_type(&type_, globals)
+                        ),
+                    ))
+                }
+                Type::Tuple(types) => Value::Tuple(
+                    types
+                        .iter()
+                        .map(|type_| {
+                            Value::Zeroed(type_.clone(), location)
+                                .resolve_types(function, globals, lexer)
+                        })
+                        .collect::<Result<Vec<Value>, String>>()?,
+                    types,
+                ),
+                Type::Typ => panic!("types can't be used in runtime"),
+                Type::TypVar(_) => panic!("unresolved type var got to code gen"),
+            },
             Self::Length(value, location) => {
                 let value = value.resolve_types(function, globals, lexer)?;
                 let type_ = type_of(&value, function, globals);
@@ -728,6 +754,7 @@ pub fn print_ir(function: &Function, globals: &Globals) {
 pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
     match value {
         Value::IntLiteral(_) | Value::Length(_, _) => Type::Int,
+        Value::Int32Literal(_) => Type::Int32,
         Value::BoolLiteral(_) => Type::Bool,
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
         Value::Type(_) => Type::Typ,
@@ -746,7 +773,7 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
                 .map(|type_| globals.resolve_type(type_))
                 .collect(),
         ),
-        Value::Zeroed(type_) => globals.resolve_type(type_),
+        Value::Zeroed(type_, _) => globals.resolve_type(type_),
         Value::Undefined => todo!("make undefined know its type"),
     }
 }
