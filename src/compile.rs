@@ -1,6 +1,7 @@
 use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
+use crate::types::should_be_ptr;
 use crate::types::type_of;
 
 use crate::lex::Lexer;
@@ -14,6 +15,7 @@ use crate::ir::Instruction;
 use crate::ir::Logical;
 use crate::ir::Phi;
 use crate::ir::Relational;
+use crate::ir::Scope;
 use crate::ir::Value;
 
 use crate::types::resolve_types_function;
@@ -157,32 +159,39 @@ fn do_type_assertion(
     ))
 }
 
-fn compile_if(
+fn compile_normal_block(
+    create_borrowed_vars: bool,
+    lexer: &mut Lexer,
     function: &mut Function,
     globals: &mut Globals,
+) -> Result<Scope, String> {
+    function.new_scope(create_borrowed_vars);
+    lexer.consume_and_expect("(")?;
+    compile_block(lexer, function, globals, false)?;
+
+    Result::Ok(
+        function
+            .scopes
+            .pop()
+            .expect("compile_if already created a then scope"),
+    )
+}
+
+fn compile_if(
     lexer: &mut Lexer,
+    function: &mut Function,
+    globals: &mut Globals,
     location: Location,
 ) -> Result<(), String> {
     let condition = function.pop_of_type(Type::Bool, globals, location, lexer)?;
 
-    function.new_scope(false);
-    lexer.consume_and_expect("(")?;
-    compile_block(lexer, function, globals, false)?;
+    let mut then_scope = compile_normal_block(false, lexer, function, globals)?;
 
-    let mut then_scope = function
-        .scopes
-        .pop()
-        .expect("compile_if already created a then scope");
-
-    function.new_scope(false);
-    if lexer.try_consume("else") {
-        lexer.consume_and_expect("(")?;
-        compile_block(lexer, function, globals, false)?;
-    }
-    let mut else_scope = function
-        .scopes
-        .pop()
-        .expect("compile_if already created an else scope");
+    let mut else_scope = if lexer.try_consume("else") {
+        compile_normal_block(false, lexer, function, globals)?
+    } else {
+        Scope::new(false)
+    };
 
     let mut then_returned = Vec::new();
     let mut else_returned = Vec::new();
@@ -205,14 +214,10 @@ fn compile_if(
     }
 
     then_returned.reverse();
-    while let Some(value) = then_scope.stack.pop() {
-        then_returned.push(value);
-    }
+    then_returned.append(&mut then_scope.stack);
 
     else_returned.reverse();
-    while let Some(value) = else_scope.stack.pop() {
-        else_returned.push(value);
-    }
+    else_returned.append(&mut else_scope.stack);
 
     let mut phis = Vec::new();
     if !then_scope.no_return && !else_scope.no_return {
@@ -338,11 +343,7 @@ fn compile_while(
         lexer,
     )?;
 
-    function.new_scope(false);
-    lexer.consume_and_expect("(")?;
-    compile_block(lexer, function, globals, false)?;
-
-    let body_scope = function.scopes.pop().expect("scopes were created above");
+    let body_scope = compile_normal_block(false, lexer, function, globals)?;
     let mut test_scope = function.scopes.pop().expect("scopes were created above");
 
     if test_scope.no_return {
@@ -444,6 +445,31 @@ fn compile_return(
     }
 }
 
+fn compile_load(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(ptr) = function.nth_from_top(0, globals) {
+        if let Some(value_type) = should_be_ptr(type_of(&ptr, function, globals), globals) {
+            function.pop(globals).expect("stack is checked above");
+
+            let result_var = function.new_var(value_type.clone());
+            function.add_instruction(Instruction::Load(ptr, value_type, result_var));
+            function.push(Value::Variable(result_var));
+            return Result::Ok(());
+        }
+    }
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected ... A Ptr, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_store(
     function: &mut Function,
     globals: &mut Globals,
@@ -451,11 +477,11 @@ fn compile_store(
     location: Location,
 ) -> Result<(), String> {
     if let Some(ptr) = function.nth_from_top(1, globals) {
-        if let Type::Ptr(value_type) = type_of(&ptr, function, globals) {
+        if let Some(value_type) = should_be_ptr(type_of(&ptr, function, globals), globals) {
             if let Some(value) = function.nth_from_top(0, globals) {
                 if merge_types(&type_of(&value, function, globals), &value_type, globals) {
                     let (ptr, value) = function.pop2_of_any_type(globals, location, lexer)?;
-                    function.add_instruction(Instruction::Store(ptr, *value_type, value));
+                    function.add_instruction(Instruction::Store(ptr, value_type, value));
                     return Result::Ok(());
                 }
             }
@@ -464,7 +490,7 @@ fn compile_store(
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected A Ptr A, found {}",
+            "expected ... A Ptr A, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -778,7 +804,7 @@ fn compile_block(
                     );
                 }
             }
-            Word::Id("if") => compile_if(function, globals, lexer, location)?,
+            Word::Id("if") => compile_if(lexer, function, globals, location)?,
             Word::Id("loop") => compile_loop(function, globals, lexer, location)?,
             Word::Id("while") => compile_while(function, globals, lexer, location)?,
             Word::Id("lambda") => {
@@ -824,22 +850,7 @@ fn compile_block(
                 function.add_instruction(Instruction::Alloca(value, type_, result_var));
                 function.push(Value::Variable(result_var));
             }
-            Word::Id("load") => {
-                let ptr = function.pop_of_any_type(globals, location, lexer)?;
-                if let Type::Ptr(value_type) = type_of(&ptr, function, globals) {
-                    let result_var = function.new_var(value_type.as_ref().clone());
-                    function.add_instruction(Instruction::Load(ptr, *value_type, result_var));
-                    function.push(Value::Variable(result_var));
-                } else {
-                    return Result::Err(lexer.make_error_report(
-                        location,
-                        &format!(
-                            "expected A Ptr, found {}",
-                            function.stack_as_string(globals)
-                        ),
-                    ));
-                }
-            }
+            Word::Id("load") => compile_load(function, globals, lexer, location)?,
             Word::Id("store") => compile_store(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
