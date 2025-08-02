@@ -1,13 +1,12 @@
-use crate::ir::type_of;
-
 use crate::types::display_type;
 use crate::types::display_type_list;
+use crate::types::merge_types;
+use crate::types::type_of;
 
 use crate::lex::Lexer;
 use crate::lex::Location;
 use crate::lex::Word;
 
-use crate::ir;
 use crate::ir::Arithemtic;
 use crate::ir::Function;
 use crate::ir::Globals;
@@ -73,8 +72,7 @@ fn compile_call(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Type::FnPtr(arg_types, result_types) =
-        ir::type_of(&called_value, current_function, globals)
+    if let Type::FnPtr(arg_types, result_types) = type_of(&called_value, current_function, globals)
     {
         if arg_types.iter().enumerate().all(|(i, arg_type)| {
             current_function
@@ -135,7 +133,7 @@ fn do_type_assertion(
 ) -> Result<(), String> {
     if let Some(value) = function.nth_from_top(1, globals) {
         if let Some(Value::Type(type_)) = function.pop(globals) {
-            return if globals.merge_types(&type_of(&value, function, globals), &type_) {
+            return if merge_types(&type_of(&value, function, globals), &type_, globals) {
                 Result::Ok(())
             } else {
                 Result::Err(lexer.make_error_report(
@@ -455,7 +453,7 @@ fn compile_store(
     if let Some(ptr) = function.nth_from_top(1, globals) {
         if let Type::Ptr(value_type) = type_of(&ptr, function, globals) {
             if let Some(value) = function.nth_from_top(0, globals) {
-                if globals.merge_types(&type_of(&value, function, globals), &value_type) {
+                if merge_types(&type_of(&value, function, globals), &value_type, globals) {
                     let (ptr, value) = function.pop2_of_any_type(globals, location, lexer)?;
                     function.add_instruction(Instruction::Store(ptr, *value_type, value));
                     return Result::Ok(());

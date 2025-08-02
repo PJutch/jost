@@ -3,12 +3,13 @@ use crate::lex::Location;
 
 use crate::types::display_type;
 use crate::types::display_type_list;
+use crate::types::merge_types;
+use crate::types::type_of;
 use crate::types::Type;
 
 use std::collections::HashMap;
 
 use core::panic;
-use std::iter::zip;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -42,8 +43,8 @@ pub struct Globals {
     pub lambdas: Vec<Function>,
     pub functions: HashMap<String, Function>,
 
-    type_vars: HashMap<i64, Type>,
-    type_var_locations: HashMap<i64, Location>,
+    pub type_vars: HashMap<i64, Type>,
+    pub type_var_locations: HashMap<i64, Location>,
     last_type_var: i64,
 }
 
@@ -78,75 +79,6 @@ impl Globals {
         self.lambdas.push(lambda);
 
         global_name
-    }
-
-    pub fn resolve_type(&self, type_: &Type) -> Type {
-        match type_ {
-            Type::TypVar(i) => self.type_vars.get(i).unwrap_or(type_).clone(),
-            Type::FnPtr(arg_types, result_types) => Type::FnPtr(
-                arg_types
-                    .iter()
-                    .map(|arg_type| self.resolve_type(arg_type))
-                    .collect(),
-                result_types
-                    .iter()
-                    .map(|result_type| self.resolve_type(result_type))
-                    .collect(),
-            ),
-            _ => type_.clone(),
-        }
-    }
-
-    pub fn resolve_actual_type(&self, type_: &Type, lexer: &Lexer) -> Result<Type, String> {
-        let resolved_type = self.resolve_type(type_);
-        if let Type::TypVar(i) = resolved_type {
-            Result::Err(lexer.make_error_report(self.type_var_locations[&i], "Ambigous type"))
-        } else {
-            Result::Ok(resolved_type)
-        }
-    }
-
-    pub fn merge_types(&mut self, type1: &Type, type2: &Type) -> bool {
-        match type1 {
-            Type::TypVar(i) => {
-                if let Some(new_type1) = self.type_vars.get(i) {
-                    self.merge_types(&new_type1.clone(), type2)
-                } else {
-                    if type2 != type1 {
-                        self.type_vars.insert(*i, type2.clone());
-                    }
-                    true
-                }
-            }
-            Type::FnPtr(arg_types1, result_types1) => {
-                if let Type::FnPtr(arg_types2, result_types2) = type2 {
-                    let arg_types_match = self.merge_type_lists(arg_types1, arg_types2);
-                    let result_types_match = self.merge_type_lists(result_types1, result_types2);
-                    arg_types_match && result_types_match
-                } else {
-                    false
-                }
-            }
-            _ => match type2 {
-                Type::TypVar(_) => self.merge_types(type2, type1),
-                Type::FnPtr(_, _) => false,
-                _ => type1 == type2,
-            },
-        }
-    }
-
-    pub fn merge_type_lists(&mut self, types1: &[Type], types2: &[Type]) -> bool {
-        if types1.len() == types2.len() {
-            let mut types_match = true;
-            for (type1, type2) in zip(types1, types2) {
-                if !self.merge_types(type1, type2) {
-                    types_match = false;
-                }
-            }
-            types_match
-        } else {
-            false
-        }
     }
 
     pub fn new_type_var(&mut self, location: Location) -> i64 {
@@ -388,7 +320,7 @@ impl Function {
         lexer: &Lexer,
     ) -> Result<Value, String> {
         if let Some(value) = self.nth_from_top(0, globals) {
-            if globals.merge_types(&type_of(&value, self, globals), &type_) {
+            if merge_types(&type_of(&value, self, globals), &type_, globals) {
                 return Result::Ok(self.pop(globals).expect("stack is checked to not be empty"));
             }
         }
@@ -413,8 +345,8 @@ impl Function {
     ) -> Result<(Value, Value), String> {
         if let Some(value1) = self.nth_from_top(1, globals) {
             if let Some(value2) = self.nth_from_top(0, globals) {
-                if globals.merge_types(&type_of(&value1, self, globals), &type1)
-                    && globals.merge_types(&type_of(&value2, self, globals), &type2)
+                if merge_types(&type_of(&value1, self, globals), &type1, globals)
+                    && merge_types(&type_of(&value2, self, globals), &type2, globals)
                 {
                     let value2 = self
                         .pop(globals)
@@ -517,10 +449,10 @@ impl Function {
             if let Some(Value::Tuple(arg_types, arg_type_types)) = self.nth_from_top(1, globals) {
                 if arg_type_types
                     .iter()
-                    .all(|type_| globals.merge_types(type_, &Type::Typ))
+                    .all(|type_| merge_types(type_, &Type::Typ, globals))
                     && result_type_types
                         .iter()
-                        .all(|type_| globals.merge_types(type_, &Type::Typ))
+                        .all(|type_| merge_types(type_, &Type::Typ, globals))
                 {
                     self.pop(globals).expect("stack is checked above");
                     self.pop(globals).expect("stack is checked above");
@@ -564,33 +496,6 @@ pub fn print_ir(function: &Function, globals: &Globals) {
     for (i, lambda) in globals.lambdas.iter().enumerate() {
         println!("__lambda{}", i + 1);
         print_function_ir(lambda);
-    }
-}
-
-pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
-    match value {
-        Value::IntLiteral(_) | Value::Length(_, _) => Type::Int,
-        Value::Int32Literal(_) => Type::Int32,
-        Value::BoolLiteral(_) => Type::Bool,
-        Value::Tuple(_, types) => Type::Tuple(types.clone()),
-        Value::Type(_) => Type::Typ,
-        Value::Variable(index) => globals.resolve_type(&function.var_types[index]),
-        Value::Arg(index) => globals.resolve_type(&function.arg_types[*index as usize]),
-        Value::Global(name) => globals.resolve_type(&globals.global_types[name]),
-        Value::Function(name) => Type::FnPtr(
-            globals.functions[name]
-                .arg_types
-                .iter()
-                .map(|type_| globals.resolve_type(type_))
-                .collect(),
-            globals.functions[name]
-                .result_types
-                .iter()
-                .map(|type_| globals.resolve_type(type_))
-                .collect(),
-        ),
-        Value::Zeroed(type_, _) => globals.resolve_type(type_),
-        Value::Undefined => todo!("make undefined know its type"),
     }
 }
 

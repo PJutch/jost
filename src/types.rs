@@ -12,6 +12,7 @@ use crate::ir::Value;
 use std::collections::HashMap;
 
 use core::panic;
+use std::iter::zip;
 use std::mem;
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -42,7 +43,7 @@ fn resolve_types_value(
             let self_type = Type::Tuple(
                 types
                     .iter()
-                    .map(|type_| globals.resolve_actual_type(type_, lexer))
+                    .map(|type_| resolve_actual_type(type_, globals, lexer))
                     .collect::<Result<Vec<Type>, String>>()?,
             );
 
@@ -60,8 +61,8 @@ fn resolve_types_value(
             }
             built_tuple
         }
-        Value::Type(type_) => Value::Type(globals.resolve_actual_type(&type_, lexer)?),
-        Value::Zeroed(type_, location) => match globals.resolve_actual_type(&type_, lexer)? {
+        Value::Type(type_) => Value::Type(resolve_actual_type(&type_, globals, lexer)?),
+        Value::Zeroed(type_, location) => match resolve_actual_type(&type_, globals, lexer)? {
             Type::Int => Value::IntLiteral(0),
             Type::Int32 => Value::Int32Literal(0),
             Type::Bool => Value::BoolLiteral(false),
@@ -139,7 +140,7 @@ impl DisplayTypesContext {
     }
 
     fn display_type(&mut self, type_: &Type, globals: &Globals) -> String {
-        match globals.resolve_type(type_) {
+        match resolve_type(type_, globals) {
             Type::Int => "Int".to_owned(),
             Type::Int32 => "Int32".to_owned(),
             Type::Bool => "Bool".to_owned(),
@@ -215,22 +216,22 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
         Value::BoolLiteral(_) => Type::Bool,
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
         Value::Type(_) => Type::Typ,
-        Value::Variable(index) => globals.resolve_type(&function.var_types[index]),
-        Value::Arg(index) => globals.resolve_type(&function.arg_types[*index as usize]),
-        Value::Global(name) => globals.resolve_type(&globals.global_types[name]),
+        Value::Variable(index) => resolve_type(&function.var_types[index], globals),
+        Value::Arg(index) => resolve_type(&function.arg_types[*index as usize], globals),
+        Value::Global(name) => resolve_type(&globals.global_types[name], globals),
         Value::Function(name) => Type::FnPtr(
             globals.functions[name]
                 .arg_types
                 .iter()
-                .map(|type_| globals.resolve_type(type_))
+                .map(|type_| resolve_type(type_, globals))
                 .collect(),
             globals.functions[name]
                 .result_types
                 .iter()
-                .map(|type_| globals.resolve_type(type_))
+                .map(|type_| resolve_type(type_, globals))
                 .collect(),
         ),
-        Value::Zeroed(type_, _) => globals.resolve_type(type_),
+        Value::Zeroed(type_, _) => resolve_type(type_, globals),
         Value::Undefined => todo!("make undefined know its type"),
     }
 }
@@ -243,7 +244,7 @@ fn resolve_types_phi(
 ) -> Result<Phi, String> {
     Result::Ok(Phi {
         result_var: phi.result_var,
-        result_type: globals.resolve_type(&phi.result_type),
+        result_type: resolve_type(&phi.result_type, globals),
         case1: resolve_types_value(phi.case1, function, globals, lexer)?,
         case2: resolve_types_value(phi.case2, function, globals, lexer)?,
     })
@@ -337,7 +338,7 @@ fn resolve_input(
     globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<(), String> {
-    match globals.resolve_actual_type(&type_, lexer)? {
+    match resolve_actual_type(&type_, globals, lexer)? {
         Type::Int => todo!("implement input for ints"),
         Type::Int32 => todo!("implement input for int32s"),
         Type::String => function.add_instruction(Instruction::GetsS(
@@ -412,7 +413,7 @@ fn resolve_types_instruction(
             let value = resolve_types_value(value, function, globals, lexer)?;
             function.add_instruction(Instruction::Alloca(
                 value,
-                globals.resolve_actual_type(&type_, lexer)?,
+                resolve_actual_type(&type_, globals, lexer)?,
                 result_var,
             ))
         }
@@ -420,7 +421,7 @@ fn resolve_types_instruction(
             let ptr = resolve_types_value(ptr, function, globals, lexer)?;
             function.add_instruction(Instruction::Load(
                 ptr,
-                globals.resolve_actual_type(&type_, lexer)?,
+                resolve_actual_type(&type_, globals, lexer)?,
                 result_var,
             ))
         }
@@ -429,7 +430,7 @@ fn resolve_types_instruction(
             let value = resolve_types_value(value, function, globals, lexer)?;
             function.add_instruction(Instruction::Store(
                 ptr,
-                globals.resolve_actual_type(&type_, lexer)?,
+                resolve_actual_type(&type_, globals, lexer)?,
                 value,
             ))
         }
@@ -438,7 +439,7 @@ fn resolve_types_instruction(
             let value = resolve_types_value(value, function, globals, lexer)?;
             function.add_instruction(Instruction::InsertValue(
                 tuple,
-                globals.resolve_actual_type(&tuple_type, lexer)?,
+                resolve_actual_type(&tuple_type, globals, lexer)?,
                 value,
                 index,
                 result_var,
@@ -448,7 +449,7 @@ fn resolve_types_instruction(
             let tuple = resolve_types_value(tuple, function, globals, lexer)?;
             function.add_instruction(Instruction::ExtractValue(
                 tuple,
-                globals.resolve_actual_type(&tuple_type, lexer)?,
+                resolve_actual_type(&tuple_type, globals, lexer)?,
                 index,
                 result_var,
             ))
@@ -487,12 +488,12 @@ fn resolve_types_instruction(
             let fn_ptr = resolve_types_value(fn_ptr, function, globals, lexer)?;
             let mut new_arg_types = Vec::with_capacity(arg_types.len());
             for arg_type in arg_types {
-                new_arg_types.push(globals.resolve_actual_type(&arg_type, lexer)?);
+                new_arg_types.push(resolve_actual_type(&arg_type, globals, lexer)?);
             }
 
             let mut new_result_types = Vec::with_capacity(result_types.len());
             for result_type in result_types {
-                new_result_types.push(globals.resolve_actual_type(&result_type, lexer)?);
+                new_result_types.push(resolve_actual_type(&result_type, globals, lexer)?);
             }
 
             function.add_instruction(Instruction::Call(
@@ -506,7 +507,7 @@ fn resolve_types_instruction(
         Instruction::Return(values, types) => {
             let mut new_types = Vec::with_capacity(types.len());
             for type_ in types {
-                new_types.push(globals.resolve_actual_type(&type_, lexer)?);
+                new_types.push(resolve_actual_type(&type_, globals, lexer)?);
             }
 
             let values = values
@@ -558,4 +559,73 @@ fn resolve_types_instruction(
         }
     };
     Result::Ok(())
+}
+
+pub fn resolve_type(type_: &Type, globals: &Globals) -> Type {
+    match type_ {
+        Type::TypVar(i) => globals.type_vars.get(i).unwrap_or(type_).clone(),
+        Type::FnPtr(arg_types, result_types) => Type::FnPtr(
+            arg_types
+                .iter()
+                .map(|arg_type| resolve_type(arg_type, globals))
+                .collect(),
+            result_types
+                .iter()
+                .map(|result_type| resolve_type(result_type, globals))
+                .collect(),
+        ),
+        _ => type_.clone(),
+    }
+}
+
+pub fn resolve_actual_type(type_: &Type, globals: &Globals, lexer: &Lexer) -> Result<Type, String> {
+    let resolved_type = resolve_type(type_, globals);
+    if let Type::TypVar(i) = resolved_type {
+        Result::Err(lexer.make_error_report(globals.type_var_locations[&i], "Ambigous type"))
+    } else {
+        Result::Ok(resolved_type)
+    }
+}
+
+pub fn merge_types(type1: &Type, type2: &Type, globals: &mut Globals) -> bool {
+    match type1 {
+        Type::TypVar(i) => {
+            if let Some(new_type1) = globals.type_vars.get(i) {
+                merge_types(&new_type1.clone(), type2, globals)
+            } else {
+                if type2 != type1 {
+                    globals.type_vars.insert(*i, type2.clone());
+                }
+                true
+            }
+        }
+        Type::FnPtr(arg_types1, result_types1) => {
+            if let Type::FnPtr(arg_types2, result_types2) = type2 {
+                let arg_types_match = merge_type_lists(arg_types1, arg_types2, globals);
+                let result_types_match = merge_type_lists(result_types1, result_types2, globals);
+                arg_types_match && result_types_match
+            } else {
+                false
+            }
+        }
+        _ => match type2 {
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            Type::FnPtr(_, _) => false,
+            _ => type1 == type2,
+        },
+    }
+}
+
+pub fn merge_type_lists(types1: &[Type], types2: &[Type], globals: &mut Globals) -> bool {
+    if types1.len() == types2.len() {
+        let mut types_match = true;
+        for (type1, type2) in zip(types1, types2) {
+            if !merge_types(type1, type2, globals) {
+                types_match = false;
+            }
+        }
+        types_match
+    } else {
+        false
+    }
 }
