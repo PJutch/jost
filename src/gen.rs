@@ -4,8 +4,9 @@ use crate::ir::Globals;
 use crate::ir::Instruction;
 use crate::ir::Logical;
 use crate::ir::Relational;
-use crate::ir::Type;
 use crate::ir::Value;
+
+use crate::types::Type;
 
 use core::panic;
 use std::collections::HashMap;

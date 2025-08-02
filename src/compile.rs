@@ -1,6 +1,7 @@
-use crate::ir::display_type;
-use crate::ir::display_type_list;
 use crate::ir::type_of;
+
+use crate::types::display_type;
+use crate::types::display_type_list;
 
 use crate::lex::Lexer;
 use crate::lex::Location;
@@ -14,8 +15,10 @@ use crate::ir::Instruction;
 use crate::ir::Logical;
 use crate::ir::Phi;
 use crate::ir::Relational;
-use crate::ir::Type;
 use crate::ir::Value;
+
+use crate::types::resolve_types_function;
+use crate::types::Type;
 
 use std::cmp;
 use std::mem;
@@ -891,18 +894,17 @@ fn compile_function(
 
 pub fn compile_to_ir(lexer: &mut Lexer, globals: &mut Globals) -> Result<Function, String> {
     let mut main = compile_function(lexer, globals, Vec::new(), Vec::new(), true)?;
-
-    main = main.resolve_types(globals, lexer)?;
+    main = resolve_types_function(main, globals, lexer)?;
 
     let mut lambdas = globals.lambdas.clone();
     for lambda in &mut lambdas {
-        *lambda = lambda.resolve_types(globals, lexer)?;
+        *lambda = resolve_types_function(mem::take(lambda), globals, lexer)?;
     }
     globals.lambdas = lambdas;
 
     let mut functions = globals.functions.clone();
     for function in functions.values_mut() {
-        *function = function.resolve_types(globals, lexer)?;
+        *function = resolve_types_function(mem::take(function), globals, lexer)?;
     }
     globals.functions = functions;
 

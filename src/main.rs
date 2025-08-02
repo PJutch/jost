@@ -11,6 +11,8 @@ use crate::compile::compile_to_ir;
 mod lex;
 use crate::lex::Lexer;
 
+mod types;
+
 use core::str;
 
 use std::env;
