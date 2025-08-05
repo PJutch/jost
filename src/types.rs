@@ -30,6 +30,92 @@ pub enum Type {
     TypVar(i64),
 }
 
+impl Type {
+    pub fn compiletime_len(&self) -> i64 {
+        match self {
+            Type::Tuple(types) => types.len() as i64,
+            Type::Array(_, size) => *size,
+            _ => panic!("value doesn't have a length"),
+        }
+    }
+
+    pub fn element_type(&self, index: i64) -> &Type {
+        match self {
+            Type::Tuple(types) => &types[index as usize],
+            Type::Array(element_type, _) => element_type.as_ref(),
+            _ => panic!("type can't be indexed"),
+        }
+    }
+
+    pub fn index_type_statically(
+        &self,
+        index: i64,
+        globals: &Globals,
+        lexer: &Lexer,
+        location: Location,
+    ) -> Result<&Type, String> {
+        match self {
+            Type::Tuple(types) => types.get(index as usize).ok_or_else(|| {
+                lexer.make_error_report(
+                    location,
+                    &format!(
+                        "index {index} is out of bounds for {}",
+                        display_type(self, globals)
+                    ),
+                )
+            }),
+            Type::Array(element_type, size) => {
+                if (0..*size).contains(&index) {
+                    Result::Ok(element_type.as_ref())
+                } else {
+                    Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "index {index} is out of bounds for {}",
+                            display_type(self, globals)
+                        ),
+                    ))
+                }
+            }
+            _ => Result::Err(lexer.make_error_report(
+                location,
+                &format!("{} can't be indexed", display_type(self, globals)),
+            )),
+        }
+    }
+
+    pub fn index_type_dinamically(
+        &self,
+        globals: &mut Globals,
+        lexer: &Lexer,
+        location: Location,
+    ) -> Result<&Type, String> {
+        match self {
+            Type::Array(element_type, _) => Result::Ok(element_type),
+            Type::Tuple(types) => {
+                if types
+                    .iter()
+                    .all(|type_| merge_types(type_, &types[0], globals))
+                {
+                    Result::Ok(&types[0])
+                } else {
+                    Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "{} can't be indexed dinamically",
+                            display_type(self, globals)
+                        ),
+                    ))
+                }
+            }
+            _ => Result::Err(lexer.make_error_report(
+                location,
+                &format!("{} can't be indexed", display_type(self, globals)),
+            )),
+        }
+    }
+}
+
 fn resolve_types_value(
     value: Value,
     function: &mut Function,
@@ -292,6 +378,7 @@ fn resolve_print(
     globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<(), String> {
+    let type_ = resolve_actual_type(&type_, globals, lexer)?;
     match type_.clone() {
         Type::Int => {
             let value = resolve_types_value(value, function, globals, lexer)?;
@@ -332,6 +419,8 @@ fn resolve_print(
             let value = resolve_types_value(value, function, globals, lexer)?;
 
             for (i, element_type) in types.iter().enumerate() {
+                let element_type = resolve_actual_type(element_type, globals, lexer)?;
+
                 let element_var = function.new_var(element_type.clone());
                 function.add_instruction(Instruction::ExtractValue(
                     value.clone(),
@@ -340,6 +429,7 @@ fn resolve_print(
                     i as i64,
                     element_var,
                 ));
+
                 resolve_print(
                     Value::Variable(element_var),
                     element_type.clone(),
@@ -522,9 +612,15 @@ fn resolve_types_instruction(
             let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
             function.add_instruction(Instruction::Alloca(tuple, tuple_type.clone(), ptr_var));
 
+            let viewed_through_type = if let Type::Tuple(types) = &tuple_type {
+                Type::Array(Box::from(value_type.clone()), types.len() as i64)
+            } else {
+                tuple_type.clone()
+            };
+
             let element_ptr_var = function.new_var(Type::Ptr(Box::from(value_type.clone())));
             function.add_instruction(Instruction::GetElementPtr(
-                tuple_type.clone(),
+                viewed_through_type,
                 Value::Variable(ptr_var),
                 index,
                 element_ptr_var,
@@ -550,9 +646,15 @@ fn resolve_types_instruction(
             let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
             function.add_instruction(Instruction::Alloca(tuple, tuple_type.clone(), ptr_var));
 
+            let viewed_through_type = if let Type::Tuple(types) = &tuple_type {
+                Type::Array(Box::from(value_type.clone()), types.len() as i64)
+            } else {
+                tuple_type.clone()
+            };
+
             let element_ptr_var = function.new_var(Type::Ptr(Box::from(value_type.clone())));
             function.add_instruction(Instruction::GetElementPtr(
-                tuple_type,
+                viewed_through_type,
                 Value::Variable(ptr_var),
                 index,
                 element_ptr_var,
@@ -698,6 +800,15 @@ pub fn resolve_type(type_: &Type, globals: &Globals) -> Type {
                 .map(|result_type| resolve_type(result_type, globals))
                 .collect(),
         ),
+        Type::Tuple(types) => Type::Tuple(
+            types
+                .iter()
+                .map(|type_| resolve_type(type_, globals))
+                .collect(),
+        ),
+        Type::Array(type_, size) => {
+            Type::Array(Box::from(resolve_type(type_.as_ref(), globals)), *size)
+        }
         _ => type_.clone(),
     }
 }

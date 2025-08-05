@@ -446,14 +446,11 @@ impl Function {
         lexer: &Lexer,
         location: Location,
     ) -> Result<(Vec<Type>, Vec<Type>), String> {
-        if let Some(Value::Tuple(result_types, result_type_types)) = self.nth_from_top(0, globals) {
-            if let Some(Value::Tuple(arg_types, arg_type_types)) = self.nth_from_top(1, globals) {
-                if arg_type_types
-                    .iter()
-                    .all(|type_| merge_types(type_, &Type::Typ, globals))
-                    && result_type_types
-                        .iter()
-                        .all(|type_| merge_types(type_, &Type::Typ, globals))
+        if let Some(Value::Array(result_types, arg_types_type)) = self.nth_from_top(0, globals) {
+            if let Some(Value::Array(arg_types, result_types_type)) = self.nth_from_top(1, globals)
+            {
+                if merge_types(&arg_types_type, &Type::Typ, globals)
+                    && merge_types(&result_types_type, &Type::Typ, globals)
                 {
                     self.pop(globals).expect("stack is checked above");
                     self.pop(globals).expect("stack is checked above");
@@ -475,7 +472,7 @@ impl Function {
         Result::Err(lexer.make_error_report(
             location,
             &format!(
-                "Expected Type n Array Type m Array, {}",
+                "Expected Type n Array Type m Array, found {}",
                 self.stack_as_string(globals)
             ),
         ))

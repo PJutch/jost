@@ -279,30 +279,16 @@ fn generate_instruction_llvm(
                 context.to_expression(tuple),
             ));
         }
-        Instruction::InsertValueDyn(tuple, tuple_type, value, value_type, index, result_var) => {
-            let result_var_number = context.next_var_number(*result_var);
-            context.append(&format!(
-                "    %{result_var_number} = insertvalue {} {}, {} {}, {}\n",
-                to_llvm_type(tuple_type),
-                context.to_expression(tuple),
-                to_llvm_type(value_type),
-                context.to_expression(value),
-                context.to_expression(index)
-            ));
+        Instruction::InsertValueDyn(_, _, _, _, _, _) => {
+            panic!("Dynamic insertvalue got to codegen")
         }
-        Instruction::ExtractValueDyn(tuple, tuple_type, _, index, result_var) => {
-            let result_var_number = context.next_var_number(*result_var);
-            context.append(&format!(
-                "    %{result_var_number} = extractvalue {} {}, {}\n",
-                to_llvm_type(tuple_type),
-                context.to_expression(tuple),
-                context.to_expression(index)
-            ));
+        Instruction::ExtractValueDyn(_, _, _, _, _) => {
+            panic!("Dynamic extractvalue got to codegen")
         }
         Instruction::GetElementPtr(type_, ptr, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
-                "    %{result_var_number} = getelementptr {}, ptr {}, i64 0, i64 {}",
+                "    %{result_var_number} = getelementptr {}, ptr {}, i64 0, i64 {}\n",
                 to_llvm_type(type_),
                 context.to_expression(ptr),
                 context.to_expression(index)
