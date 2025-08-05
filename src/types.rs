@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use core::panic;
 use std::iter::zip;
 use std::mem;
+use std::ops::Deref;
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Type {
@@ -24,6 +25,7 @@ pub enum Type {
     Ptr(Box<Type>),
     FnPtr(Vec<Type>, Vec<Type>),
     Tuple(Vec<Type>),
+    Array(Box<Type>, i64),
     Typ,
     TypVar(i64),
 }
@@ -40,26 +42,48 @@ fn resolve_types_value(
                 .into_iter()
                 .map(|value| resolve_types_value(value, function, globals, lexer))
                 .collect::<Result<Vec<Value>, String>>()?;
-            let self_type = Type::Tuple(
-                types
-                    .iter()
-                    .map(|type_| resolve_actual_type(type_, globals, lexer))
-                    .collect::<Result<Vec<Type>, String>>()?,
-            );
+            let types = types
+                .iter()
+                .map(|type_| resolve_actual_type(type_, globals, lexer))
+                .collect::<Result<Vec<Type>, String>>()?;
 
             let mut built_tuple = Value::Undefined;
             for (i, value) in values.into_iter().enumerate() {
-                let next_var = function.new_var(self_type.clone());
+                let next_var = function.new_var(Type::Tuple(types.clone()));
                 function.add_instruction(Instruction::InsertValue(
                     built_tuple,
-                    self_type.clone(),
+                    Type::Tuple(types.clone()),
                     value,
+                    types[i].clone(),
                     i as i64,
                     next_var,
                 ));
                 built_tuple = Value::Variable(next_var);
             }
             built_tuple
+        }
+        Value::Array(values, type_) => {
+            let values = values
+                .into_iter()
+                .map(|value| resolve_types_value(value, function, globals, lexer))
+                .collect::<Result<Vec<Value>, String>>()?;
+            let type_ = resolve_actual_type(&type_, globals, lexer)?;
+
+            let array_type = Type::Array(Box::from(type_.clone()), values.len() as i64);
+            let mut built_array = Value::Undefined;
+            for (i, value) in values.into_iter().enumerate() {
+                let next_var = function.new_var(array_type.clone());
+                function.add_instruction(Instruction::InsertValue(
+                    built_array,
+                    array_type.clone(),
+                    value,
+                    type_.clone(),
+                    i as i64,
+                    next_var,
+                ));
+                built_array = Value::Variable(next_var);
+            }
+            built_array
         }
         Value::Type(type_) => Value::Type(resolve_actual_type(&type_, globals, lexer)?),
         Value::Zeroed(type_, location) => match resolve_actual_type(&type_, globals, lexer)? {
@@ -89,19 +113,25 @@ fn resolve_types_value(
                     .collect::<Result<Vec<Value>, String>>()?,
                 types,
             ),
+            Type::Array(_, _) => todo!("implement zeroed for arrays"),
             Type::Typ => panic!("types can't be used in runtime"),
             Type::TypVar(_) => panic!("unresolved type var got to code gen"),
         },
         Value::Length(value, location) => {
             let value = resolve_types_value(*value, function, globals, lexer)?;
             let type_ = type_of(&value, function, globals);
-            if let Type::Tuple(types) = type_ {
-                Value::IntLiteral(types.len() as i64)
-            } else {
-                return Result::Err(lexer.make_error_report(
-                    location,
-                    &format!("expected Tuple, found {}", display_type(&type_, globals)),
-                ));
+            match type_ {
+                Type::Tuple(types) => Value::IntLiteral(types.len() as i64),
+                Type::Array(_, size) => Value::IntLiteral(size),
+                _ => {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "expected Tuple or Array, found {}",
+                            display_type(&type_, globals)
+                        ),
+                    ))
+                }
             }
         }
         _ => value,
@@ -156,6 +186,10 @@ impl DisplayTypesContext {
             Type::Tuple(types) => {
                 "(".to_owned() + &self.display_type_list(&types, globals) + ") Tuple"
             }
+            Type::Array(type_, size) => format!(
+                "{} {size} Array",
+                self.display_type(type_.as_ref(), globals)
+            ),
             Type::Typ => "Type".to_owned(),
             Type::TypVar(i) => self.type_var_name(i),
         }
@@ -215,6 +249,7 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
         Value::Int32Literal(_) => Type::Int32,
         Value::BoolLiteral(_) => Type::Bool,
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
+        Value::Array(values, type_) => Type::Array(Box::from(type_.clone()), values.len() as i64),
         Value::Type(_) => Type::Typ,
         Value::Variable(index) => resolve_type(&function.var_types[index], globals),
         Value::Arg(index) => resolve_type(&function.arg_types[*index as usize], globals),
@@ -296,17 +331,38 @@ fn resolve_print(
         Type::Tuple(types) => {
             let value = resolve_types_value(value, function, globals, lexer)?;
 
-            for (i, element_type) in types.into_iter().enumerate() {
+            for (i, element_type) in types.iter().enumerate() {
                 let element_var = function.new_var(element_type.clone());
                 function.add_instruction(Instruction::ExtractValue(
                     value.clone(),
                     type_.clone(),
+                    types[i].clone(),
                     i as i64,
                     element_var,
                 ));
                 resolve_print(
                     Value::Variable(element_var),
-                    element_type,
+                    element_type.clone(),
+                    function,
+                    globals,
+                    lexer,
+                )?;
+            }
+        }
+        Type::Array(element_type, size) => {
+            let value = resolve_types_value(value, function, globals, lexer)?;
+            for i in 0..size {
+                let element_var = function.new_var(element_type.deref().clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    value.clone(),
+                    type_.clone(),
+                    element_type.deref().clone(),
+                    i,
+                    element_var,
+                ));
+                resolve_print(
+                    Value::Variable(element_var),
+                    element_type.deref().clone(),
                     function,
                     globals,
                     lexer,
@@ -366,6 +422,7 @@ fn resolve_input(
             ));
         }
         Type::Tuple(_) => todo!("input lists"),
+        Type::Array(_, _) => todo!("input lists"),
         Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
             return Result::Err(lexer.make_error_report(
                 location,
@@ -434,25 +491,92 @@ fn resolve_types_instruction(
                 value,
             ))
         }
-        Instruction::InsertValue(tuple, tuple_type, value, index, result_var) => {
+        Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
             let tuple = resolve_types_value(tuple, function, globals, lexer)?;
             let value = resolve_types_value(value, function, globals, lexer)?;
             function.add_instruction(Instruction::InsertValue(
                 tuple,
                 resolve_actual_type(&tuple_type, globals, lexer)?,
                 value,
+                value_type,
                 index,
                 result_var,
             ))
         }
-        Instruction::ExtractValue(tuple, tuple_type, index, result_var) => {
+        Instruction::ExtractValue(tuple, tuple_type, value_type, index, result_var) => {
             let tuple = resolve_types_value(tuple, function, globals, lexer)?;
             function.add_instruction(Instruction::ExtractValue(
                 tuple,
                 resolve_actual_type(&tuple_type, globals, lexer)?,
+                value_type,
                 index,
                 result_var,
             ))
+        }
+        Instruction::InsertValueDyn(tuple, tuple_type, value, value_type, index, result_var) => {
+            let tuple = resolve_types_value(tuple, function, globals, lexer)?;
+            let tuple_type = resolve_actual_type(&tuple_type, globals, lexer)?;
+            let value = resolve_types_value(value, function, globals, lexer)?;
+            let value_type = resolve_actual_type(&value_type, globals, lexer)?;
+
+            let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
+            function.add_instruction(Instruction::Alloca(tuple, tuple_type.clone(), ptr_var));
+
+            let element_ptr_var = function.new_var(Type::Ptr(Box::from(value_type.clone())));
+            function.add_instruction(Instruction::GetElementPtr(
+                tuple_type.clone(),
+                Value::Variable(ptr_var),
+                index,
+                element_ptr_var,
+            ));
+
+            function.add_instruction(Instruction::Store(
+                Value::Variable(element_ptr_var),
+                value_type,
+                value,
+            ));
+
+            function.add_instruction(Instruction::Load(
+                Value::Variable(ptr_var),
+                tuple_type,
+                result_var,
+            ));
+        }
+        Instruction::ExtractValueDyn(tuple, tuple_type, value_type, index, result_var) => {
+            let tuple = resolve_types_value(tuple, function, globals, lexer)?;
+            let tuple_type = resolve_actual_type(&tuple_type, globals, lexer)?;
+            let value_type = resolve_actual_type(&value_type, globals, lexer)?;
+
+            let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
+            function.add_instruction(Instruction::Alloca(tuple, tuple_type.clone(), ptr_var));
+
+            let element_ptr_var = function.new_var(Type::Ptr(Box::from(value_type.clone())));
+            function.add_instruction(Instruction::GetElementPtr(
+                tuple_type,
+                Value::Variable(ptr_var),
+                index,
+                element_ptr_var,
+            ));
+
+            function.add_instruction(Instruction::Load(
+                Value::Variable(element_ptr_var),
+                value_type,
+                result_var,
+            ));
+        }
+        Instruction::GetElementPtr(type_, value, index, result_var) => {
+            let value = resolve_types_value(value, function, globals, lexer)?;
+            let index = resolve_types_value(index, function, globals, lexer)?;
+            function.add_instruction(Instruction::GetElementPtr(type_, value, index, result_var));
+        }
+        Instruction::Bitcast(value, from, to, result_var) => {
+            let value = resolve_types_value(value, function, globals, lexer)?;
+            function.add_instruction(Instruction::Bitcast(
+                value,
+                resolve_actual_type(&from, globals, lexer)?,
+                resolve_actual_type(&to, globals, lexer)?,
+                result_var,
+            ));
         }
         Instruction::Print(value, type_) => resolve_print(value, type_, function, globals, lexer)?,
         Instruction::Putstr(value) => {

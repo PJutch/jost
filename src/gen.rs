@@ -46,7 +46,8 @@ impl GenerationContext {
             Value::IntLiteral(value) => value.to_string(),
             Value::Int32Literal(value) => value.to_string(),
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
-            Value::Tuple(_, _) => todo!("build tuples of values"),
+            Value::Tuple(_, _) => panic!("tuple literal got to code gen"),
+            Value::Array(_, _) => panic!("array literal got to code gen"),
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
@@ -62,6 +63,7 @@ impl GenerationContext {
             Value::Int32Literal(_) => panic!("trying to call int32 literal"),
             Value::BoolLiteral(_) => panic!("trying to call bool literal"),
             Value::Tuple(_, _) => panic!("trying to call a tuple"),
+            Value::Array(_, _) => panic!("trying to call an array"),
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
@@ -142,15 +144,17 @@ fn to_llvm_type(type_: &Type) -> String {
             for (i, type_) in types.iter().enumerate() {
                 if i > 0 {
                     type_string += ",";
-                } else {
-                    type_string += " ";
                 }
+                type_string += " ";
                 type_string += &to_llvm_type(type_);
+            }
+            if !types.is_empty() {
                 type_string += " ";
             }
             type_string += "}";
             type_string
         }
+        Type::Array(type_, size) => format!("[{size} x {}]", to_llvm_type(type_)),
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }
@@ -257,14 +261,8 @@ fn generate_instruction_llvm(
                 context.to_expression(ptr)
             ));
         }
-        Instruction::InsertValue(tuple, tuple_type, value, index, result_var) => {
+        Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
-            let value_type = if let Type::Tuple(element_types) = tuple_type {
-                &element_types[*index as usize]
-            } else {
-                panic!("InsertValue target isn't a tuple")
-            };
-
             context.append(&format!(
                 "    %{result_var_number} = insertvalue {} {}, {} {}, {index}\n",
                 to_llvm_type(tuple_type),
@@ -273,12 +271,50 @@ fn generate_instruction_llvm(
                 context.to_expression(value),
             ));
         }
-        Instruction::ExtractValue(tuple, tuple_type, index, result_var) => {
+        Instruction::ExtractValue(tuple, tuple_type, _, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
                 "    %{result_var_number} = extractvalue {} {}, {index}\n",
                 to_llvm_type(tuple_type),
                 context.to_expression(tuple),
+            ));
+        }
+        Instruction::InsertValueDyn(tuple, tuple_type, value, value_type, index, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = insertvalue {} {}, {} {}, {}\n",
+                to_llvm_type(tuple_type),
+                context.to_expression(tuple),
+                to_llvm_type(value_type),
+                context.to_expression(value),
+                context.to_expression(index)
+            ));
+        }
+        Instruction::ExtractValueDyn(tuple, tuple_type, _, index, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = extractvalue {} {}, {}\n",
+                to_llvm_type(tuple_type),
+                context.to_expression(tuple),
+                context.to_expression(index)
+            ));
+        }
+        Instruction::GetElementPtr(type_, ptr, index, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = getelementptr {}, ptr {}, i64 0, i64 {}",
+                to_llvm_type(type_),
+                context.to_expression(ptr),
+                context.to_expression(index)
+            ));
+        }
+        Instruction::Bitcast(value, from, to, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = bitcast {} {} to {}\n",
+                to_llvm_type(from),
+                context.to_expression(value),
+                to_llvm_type(to)
             ));
         }
         Instruction::Print(_, _) => panic!("print instruction got to code gen"),

@@ -61,6 +61,11 @@ dup 2 at print
 
 [] "a" , "b" , "c" , len print
 
+[] "hello" , "world" , to_array
+"test" 0 1 + setat
+dup 1 1 - at print
+to_tuple print
+
 input String : print
 input if ("got true" print) else ("didn't get true" print)
 

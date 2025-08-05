@@ -17,6 +17,7 @@ pub enum Value {
     Int32Literal(i32),
     BoolLiteral(bool),
     Tuple(Vec<Value>, Vec<Type>),
+    Array(Vec<Value>, Type),
     Type(Type),
     Variable(i64),
     Arg(i64),
@@ -547,8 +548,15 @@ pub enum Instruction {
     Load(Value, Type, i64),
     Store(Value, Type, Value),
 
-    InsertValue(Value, Type, Value, i64, i64),
-    ExtractValue(Value, Type, i64, i64),
+    InsertValue(Value, Type, Value, Type, i64, i64),
+    ExtractValue(Value, Type, Type, i64, i64),
+
+    InsertValueDyn(Value, Type, Value, Type, Value, i64),
+    ExtractValueDyn(Value, Type, Type, Value, i64),
+
+    GetElementPtr(Type, Value, Value, i64),
+
+    Bitcast(Value, Type, Type, i64),
 
     Print(Value, Type),
     Input(i64, Type, Location),

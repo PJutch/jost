@@ -23,6 +23,7 @@ use crate::types::Type;
 
 use std::cmp;
 use std::mem;
+use std::ops::Deref;
 
 fn arithmetic_from_id(id: &str) -> Option<Arithemtic> {
     match id {
@@ -532,18 +533,40 @@ fn compile_at(
 ) -> Result<(), String> {
     if let Some(tuple) = function.nth_from_top(1, globals) {
         let type_ = type_of(&tuple, function, globals);
-        if let Type::Tuple(types) = type_.clone() {
-            if let Some(Value::IntLiteral(index)) = function.nth_from_top(0, globals) {
-                if index >= 0 {
-                    if let Some(value_type) = types.get(index as usize) {
-                        function.pop(globals).expect("stack is checked above");
+        match type_.clone() {
+            Type::Tuple(types) => {
+                if let Some(Value::IntLiteral(index)) = function.nth_from_top(0, globals) {
+                    if index >= 0 {
+                        if let Some(value_type) = types.get(index as usize) {
+                            function.pop(globals).expect("stack is checked above");
+                            function.pop(globals).expect("stack is checked above");
+
+                            let result_var = function.new_var(value_type.clone());
+                            function.push(Value::Variable(result_var));
+                            function.add_instruction(Instruction::ExtractValue(
+                                tuple,
+                                type_.clone(),
+                                value_type.clone(),
+                                index,
+                                result_var,
+                            ));
+                            return Result::Ok(());
+                        }
+                    }
+                }
+            }
+            Type::Array(element_type, _) => {
+                if let Some(index) = function.nth_from_top(0, globals) {
+                    if merge_types(&type_of(&index, function, globals), &Type::Int, globals) {
+                        let index = function.pop_of_type(Type::Int, globals, location, lexer)?;
                         function.pop(globals).expect("stack is checked above");
 
-                        let result_var = function.new_var(value_type.clone());
+                        let result_var = function.new_var(element_type.deref().clone());
                         function.push(Value::Variable(result_var));
-                        function.add_instruction(Instruction::ExtractValue(
+                        function.add_instruction(Instruction::ExtractValueDyn(
                             tuple,
                             type_.clone(),
+                            element_type.deref().clone(),
                             index,
                             result_var,
                         ));
@@ -551,6 +574,7 @@ fn compile_at(
                     }
                 }
             }
+            _ => {}
         }
     }
 
@@ -571,39 +595,124 @@ fn compile_set_at(
 ) -> Result<(), String> {
     if let Some(tuple) = function.nth_from_top(2, globals) {
         let type_ = type_of(&tuple, function, globals);
-        if let Type::Tuple(types) = type_.clone() {
-            if let Some(value) = function.nth_from_top(1, globals) {
-                if let Some(Value::IntLiteral(index)) = function.nth_from_top(0, globals) {
-                    if index >= 0 && index as (usize) < types.len() {
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
+        match type_.clone() {
+            Type::Tuple(types) => {
+                if let Some(value) = function.nth_from_top(1, globals) {
+                    if let Some(Value::IntLiteral(index)) = function.nth_from_top(0, globals) {
+                        if index >= 0 && index as (usize) < types.len() {
+                            function.pop(globals).expect("stack is checked above");
+                            function.pop(globals).expect("stack is checked above");
+                            function.pop(globals).expect("stack is checked above");
 
-                        let mut new_values = Vec::new();
-                        let mut new_types = Vec::new();
+                            let mut new_values = Vec::new();
+                            let mut new_types = Vec::new();
 
-                        for (i, old_type) in types.into_iter().enumerate() {
-                            if i == index as usize {
-                                new_values.push(value.clone());
-                                new_types.push(type_of(&value, function, globals));
-                            } else {
-                                let result_var = function.new_var(old_type.clone());
-                                function.add_instruction(Instruction::ExtractValue(
-                                    tuple.clone(),
-                                    type_.clone(),
-                                    i as i64,
-                                    result_var,
-                                ));
-                                new_values.push(Value::Variable(result_var));
+                            for (i, old_type) in types.into_iter().enumerate() {
+                                if i == index as usize {
+                                    new_values.push(value.clone());
+                                    new_types.push(type_of(&value, function, globals));
+                                } else {
+                                    let result_var = function.new_var(old_type.clone());
+                                    function.add_instruction(Instruction::ExtractValue(
+                                        tuple.clone(),
+                                        type_.clone(),
+                                        old_type.clone(),
+                                        i as i64,
+                                        result_var,
+                                    ));
+                                    new_values.push(Value::Variable(result_var));
 
-                                new_types.push(old_type);
+                                    new_types.push(old_type);
+                                }
                             }
-                        }
 
-                        function.push(Value::Tuple(new_values, new_types));
-                        return Result::Ok(());
+                            function.push(Value::Tuple(new_values, new_types));
+                            return Result::Ok(());
+                        }
                     }
                 }
+            }
+            Type::Array(element_type, _) => {
+                if let Some(value) = function.nth_from_top(1, globals) {
+                    if let Some(index) = function.nth_from_top(0, globals) {
+                        if merge_types(
+                            &type_of(&value, function, globals),
+                            element_type.as_ref(),
+                            globals,
+                        ) && merge_types(
+                            &type_of(&index, function, globals),
+                            &Type::Int,
+                            globals,
+                        ) {
+                            function.pop(globals).expect("stack is checked above");
+                            function.pop(globals).expect("stack is checked above");
+                            function.pop(globals).expect("stack is checked above");
+
+                            let result_var = function.new_var(type_.clone());
+                            function.add_instruction(Instruction::InsertValueDyn(
+                                tuple,
+                                type_,
+                                value,
+                                *element_type,
+                                index,
+                                result_var,
+                            ));
+                            function.push(Value::Variable(result_var));
+
+                            return Result::Ok(());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected ... Tuple Value Index, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_to_array(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(tuple) = function.nth_from_top(0, globals) {
+        let tuple_type = type_of(&tuple, function, globals);
+        if let Type::Tuple(ref types) = tuple_type {
+            if types
+                .iter()
+                .all(|type_| merge_types(type_, &types[0], globals))
+            {
+                function.pop(globals).expect("stack is checked above");
+
+                let element_type = types
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| Type::TypVar(globals.new_type_var(location)));
+
+                let mut values = Vec::new();
+                for i in 0..types.len() {
+                    let element_var = function.new_var(element_type.clone());
+                    function.add_instruction(Instruction::ExtractValue(
+                        tuple.clone(),
+                        tuple_type.clone(),
+                        element_type.clone(),
+                        i as i64,
+                        element_var,
+                    ));
+                    values.push(Value::Variable(element_var));
+                }
+
+                function.push(Value::Array(values, element_type));
+
+                return Result::Ok(());
             }
         }
     }
@@ -611,7 +720,51 @@ fn compile_set_at(
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected ... Tuple Value ConstantIndex, found {}",
+            "expected ... Tuple, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_to_tuple(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(array) = function.nth_from_top(0, globals) {
+        let array_type = type_of(&array, function, globals);
+        if let Type::Array(ref type_, size) = array_type {
+            function.pop(globals).expect("stack is checked above");
+
+            let mut types = Vec::new();
+            for _ in 0..size {
+                types.push(type_.deref().clone());
+            }
+
+            let mut values = Vec::new();
+            for i in 0..size {
+                let element_var = function.new_var(type_.deref().clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    array.clone(),
+                    array_type.clone(),
+                    type_.deref().clone(),
+                    i,
+                    element_var,
+                ));
+                values.push(Value::Variable(element_var));
+            }
+
+            function.push(Value::Tuple(values, types));
+
+            return Result::Ok(());
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected ... Array, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -790,6 +943,8 @@ fn compile_block(
                 let tuple = function.pop_of_any_type(globals, location, lexer)?;
                 function.push(Value::Length(Box::new(tuple), location));
             }
+            Word::Id("to_array") => compile_to_array(function, globals, lexer, location)?,
+            Word::Id("to_tuple") => compile_to_tuple(function, globals, lexer, location)?,
             Word::Id("(") => {
                 let lambda = compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));
