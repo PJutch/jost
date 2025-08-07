@@ -52,7 +52,7 @@ impl GenerationContext {
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Undefined => "undef".to_owned(),
-            Value::Zeroed(_, _) => panic!("zeroed value got to code gen"),
+            Value::Zeroed(_, _) => "zeroinitializer".to_owned(),
             Value::Length(_, _) => panic!("length value got to code gen"),
         }
     }
@@ -67,7 +67,7 @@ impl GenerationContext {
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
-            Value::Zeroed(_, _) => "null".to_owned(),
+            Value::Zeroed(_, _) => panic!("trying to call a null fn ptr"),
             Value::Undefined => "undef".to_owned(),
             Value::Length(_, _) => panic!("length value got to code gen"),
         }

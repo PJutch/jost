@@ -116,6 +116,34 @@ impl Type {
     }
 }
 
+fn check_can_be_zeroed(
+    type_: &Type,
+    globals: &Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    match type_ {
+        Type::Int | Type::Int32 | Type::Bool => Result::Ok(()),
+        Type::Ptr(_) | Type::FnPtr(_, _) | Type::String | Type::Typ => {
+            Result::Err(lexer.make_error_report(
+                location,
+                &format!(
+                    "value of type {} can't be zeroed",
+                    display_type(type_, globals)
+                ),
+            ))
+        }
+        Type::Tuple(types) => {
+            for type_ in types {
+                check_can_be_zeroed(type_, globals, lexer, location)?;
+            }
+            Result::Ok(())
+        }
+        Type::Array(element_type, _) => check_can_be_zeroed(element_type, globals, lexer, location),
+        Type::TypVar(_) => panic!("unresolved type var can't be checked if it can be zeroed"),
+    }
+}
+
 fn resolve_types_value(
     value: Value,
     function: &mut Function,
@@ -172,37 +200,15 @@ fn resolve_types_value(
             built_array
         }
         Value::Type(type_) => Value::Type(resolve_actual_type(&type_, globals, lexer)?),
-        Value::Zeroed(type_, location) => match resolve_actual_type(&type_, globals, lexer)? {
-            Type::Int => Value::IntLiteral(0),
-            Type::Int32 => Value::Int32Literal(0),
-            Type::Bool => Value::BoolLiteral(false),
-            Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => {
-                return Result::Err(lexer.make_error_report(
-                    location,
-                    &format!(
-                        "Value of type {} can't be null",
-                        display_type(&type_, globals)
-                    ),
-                ))
-            }
-            Type::Tuple(types) => Value::Tuple(
-                types
-                    .iter()
-                    .map(|type_| {
-                        resolve_types_value(
-                            Value::Zeroed(type_.clone(), location),
-                            function,
-                            globals,
-                            lexer,
-                        )
-                    })
-                    .collect::<Result<Vec<Value>, String>>()?,
-                types,
-            ),
-            Type::Array(_, _) => todo!("implement zeroed for arrays"),
-            Type::Typ => panic!("types can't be used in runtime"),
-            Type::TypVar(_) => panic!("unresolved type var got to code gen"),
-        },
+        Value::Zeroed(ref type_, location) => {
+            check_can_be_zeroed(
+                &resolve_actual_type(type_, globals, lexer)?,
+                globals,
+                lexer,
+                location,
+            )?;
+            value
+        }
         Value::Length(value, location) => {
             let value = resolve_types_value(*value, function, globals, lexer)?;
             let type_ = type_of(&value, function, globals);
