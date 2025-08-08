@@ -721,6 +721,62 @@ fn compile_set_at(
     ))
 }
 
+fn compile_ref_at(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(container) = function.nth_from_top(1, globals) {
+        if let Some(container_type) = should_be_ptr(type_of(&container, function, globals), globals)
+        {
+            if let Some(index) = function.nth_from_top(0, globals) {
+                if let Value::IntLiteral(index) = index {
+                    function.pop(globals).expect("stack is checked above");
+                    function.pop(globals).expect("stack is checked above");
+
+                    let element_type =
+                        container_type.index_type_statically(index, globals, lexer, location)?;
+
+                    let result_var = function.new_var(Type::Ptr(Box::from(element_type.clone())));
+                    function.push(Value::Variable(result_var));
+                    function.add_instruction(Instruction::GetElementPtr(
+                        container_type.clone(),
+                        container,
+                        Value::IntLiteral(index),
+                        result_var,
+                    ));
+                    return Result::Ok(());
+                } else {
+                    function.pop(globals).expect("stack is checked above");
+                    function.pop(globals).expect("stack is checked above");
+
+                    let element_type =
+                        container_type.index_type_dinamically(globals, lexer, location)?;
+
+                    let result_var = function.new_var(Type::Ptr(Box::from(element_type.clone())));
+                    function.push(Value::Variable(result_var));
+                    function.add_instruction(Instruction::GetElementPtr(
+                        container_type.clone(),
+                        container,
+                        index,
+                        result_var,
+                    ));
+                    return Result::Ok(());
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Indexable Ptr Int, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -893,6 +949,7 @@ fn compile_block(
             Word::Id(",") => compile_append(function, globals, lexer, location)?,
             Word::Id("at") => compile_at(function, globals, lexer, location)?,
             Word::Id("setat") => compile_set_at(function, globals, lexer, location)?,
+            Word::Id("refat") => compile_ref_at(function, globals, lexer, location)?,
             Word::Id("len") => {
                 let tuple = function.pop_of_any_type(globals, location, lexer)?;
                 function.push(Value::Length(Box::new(tuple), location));

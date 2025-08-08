@@ -69,6 +69,13 @@ print
 dup print
 5 5 - at print
 
+[] 1 , 2 , 3 , alloca
+dup 2 refat
+dup load print
+dup 5 store
+load print
+load print
+
 input String : print
 input if ("got true" print) else ("didn't get true" print)
 
