@@ -1,0 +1,1 @@
+0 loop (dup 5 >= if (pop 0 exit) "test loop with counter" print 1 +)

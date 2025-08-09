@@ -1,0 +1,7 @@
+[] [] String , lambda ("test" return) call print
+
+[] Bool , [] lambda (if ("test return" print return) "test normal path" print)
+dup true swp call
+dup false swp call
+pop
+

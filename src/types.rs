@@ -26,6 +26,7 @@ pub enum Type {
     FnPtr(Vec<Type>, Vec<Type>),
     Tuple(Vec<Type>),
     Array(Box<Type>, i64),
+    Slice(Box<Type>),
     Typ,
     TypVar(i64),
 }
@@ -44,6 +45,15 @@ impl Type {
             Type::Tuple(types) => &types[index as usize],
             Type::Array(element_type, _) => element_type.as_ref(),
             _ => panic!("type can't be indexed"),
+        }
+    }
+
+    pub fn all_elements_type(&self) -> &Type {
+        match self {
+            Type::Ptr(type_) | Type::Array(type_, _) | Type::Slice(type_) => type_.as_ref(),
+            Type::Tuple(_) => panic!("tuple elements are of different types"),
+            Type::TypVar(_) => todo!("handle type vars"),
+            _ => panic!("type has no elements"),
         }
     }
 
@@ -116,6 +126,10 @@ impl Type {
     }
 }
 
+pub fn slice_underlying_type(element_type: Type) -> Type {
+    Type::Tuple(Vec::from([Type::Ptr(Box::from(element_type)), Type::Int]))
+}
+
 fn check_can_be_zeroed(
     type_: &Type,
     globals: &Globals,
@@ -124,7 +138,7 @@ fn check_can_be_zeroed(
 ) -> Result<(), String> {
     match type_ {
         Type::Int | Type::Int32 | Type::Bool => Result::Ok(()),
-        Type::Ptr(_) | Type::FnPtr(_, _) | Type::String | Type::Typ => {
+        Type::Ptr(_) | Type::Slice(_) | Type::String | Type::FnPtr(_, _) | Type::Typ => {
             Result::Err(lexer.make_error_report(
                 location,
                 &format!(
@@ -199,6 +213,36 @@ fn resolve_types_value(
             }
             built_array
         }
+        Value::Slice(ptr, size) => {
+            let ptr = resolve_types_value(*ptr, function, globals, lexer)?;
+            let size = resolve_types_value(*size, function, globals, lexer)?;
+
+            let element_type = type_of(&ptr, function, globals).all_elements_type().clone();
+            let slice_type = Type::Slice(Box::from(element_type.clone()));
+            let ptr_type = Type::Ptr(Box::from(element_type.clone()));
+
+            let with_ptr_var = function.new_var(slice_type.clone());
+            function.add_instruction(Instruction::InsertValue(
+                Value::Undefined,
+                slice_underlying_type(element_type.clone()),
+                ptr,
+                ptr_type,
+                0,
+                with_ptr_var,
+            ));
+
+            let result_var = function.new_var(slice_type);
+            function.add_instruction(Instruction::InsertValue(
+                Value::Variable(with_ptr_var),
+                slice_underlying_type(element_type),
+                size,
+                Type::Int,
+                1,
+                result_var,
+            ));
+
+            Value::Variable(result_var)
+        }
         Value::Type(type_) => Value::Type(resolve_actual_type(&type_, globals, lexer)?),
         Value::Zeroed(ref type_, location) => {
             check_can_be_zeroed(
@@ -215,6 +259,17 @@ fn resolve_types_value(
             match type_ {
                 Type::Tuple(types) => Value::IntLiteral(types.len() as i64),
                 Type::Array(_, size) => Value::IntLiteral(size),
+                Type::Slice(element_type) => {
+                    let result_var = function.new_var(Type::Int);
+                    function.add_instruction(Instruction::ExtractValue(
+                        value,
+                        slice_underlying_type(*element_type),
+                        Type::Int,
+                        1,
+                        result_var,
+                    ));
+                    Value::Variable(result_var)
+                }
                 _ => {
                     return Result::Err(lexer.make_error_report(
                         location,
@@ -282,6 +337,7 @@ impl DisplayTypesContext {
                 "{} {size} Array",
                 self.display_type(type_.as_ref(), globals)
             ),
+            Type::Slice(type_) => format!("{} Slice", self.display_type(type_.as_ref(), globals)),
             Type::Typ => "Type".to_owned(),
             Type::TypVar(i) => self.type_var_name(i),
         }
@@ -342,6 +398,9 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
         Value::BoolLiteral(_) => Type::Bool,
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
         Value::Array(values, type_) => Type::Array(Box::from(type_.clone()), values.len() as i64),
+        Value::Slice(ptr, _) => Type::Slice(Box::from(
+            type_of(ptr, function, globals).all_elements_type().clone(),
+        )),
         Value::Type(_) => Type::Typ,
         Value::Variable(index) => resolve_type(&function.var_types[index], globals),
         Value::Arg(index) => resolve_type(&function.arg_types[*index as usize], globals),
@@ -465,6 +524,7 @@ fn resolve_print(
                 )?;
             }
         }
+        Type::Slice(_) => todo!("implement print for slice"),
         Type::FnPtr(_, _) | Type::Ptr(_) => function.add_instruction(Instruction::Putstr(
             Value::Global(globals.new_string(&display_type(&type_, globals))),
         )),
@@ -517,8 +577,7 @@ fn resolve_input(
                 result_var,
             ));
         }
-        Type::Tuple(_) => todo!("input lists"),
-        Type::Array(_, _) => todo!("input lists"),
+        Type::Tuple(_) | Type::Array(_, _) | Type::Slice(_) => todo!("input lists"),
         Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
             return Result::Err(lexer.make_error_report(
                 location,
@@ -676,6 +735,13 @@ fn resolve_types_instruction(
             let value = resolve_types_value(value, function, globals, lexer)?;
             let index = resolve_types_value(index, function, globals, lexer)?;
             function.add_instruction(Instruction::GetElementPtr(type_, value, index, result_var));
+        }
+        Instruction::GetNeighbourPtr(type_, value, index, result_var) => {
+            let value = resolve_types_value(value, function, globals, lexer)?;
+            let index = resolve_types_value(index, function, globals, lexer)?;
+            function.add_instruction(Instruction::GetNeighbourPtr(
+                type_, value, index, result_var,
+            ));
         }
         Instruction::Bitcast(value, from, to, result_var) => {
             let value = resolve_types_value(value, function, globals, lexer)?;

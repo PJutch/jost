@@ -1,0 +1,2 @@
+input String : print
+input if ("got true" print) else ("didn't get true" print)

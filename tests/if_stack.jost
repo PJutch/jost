@@ -1,0 +1,2 @@
+"test if touching stack" true if (dup print)
+true if (pop "test if changing stack") print

@@ -1,0 +1,7 @@
+[] 1 , 2 , 3 , dup print
+dup 2 at print
+10 2 setat print
+
+[] 5 , "hello" , print
+
+[] "a" , "b" , "c" , len print

@@ -1,0 +1,4 @@
+"test else touching the stack" false if ("unreachable" print) else (dup print)
+false if () else (pop "test else changing the stack")
+false if (print) else (print)
+false if ("unreachable") else ("test if-else pushing on the stack") print

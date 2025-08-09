@@ -1,3 +1,5 @@
+use std::path::Path;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Word<'a> {
     Id(&'a str),
@@ -53,12 +55,12 @@ fn underline(start: i64, end: i64) -> String {
 
 pub struct Lexer<'a, 'b> {
     code: &'a str,
-    file_name: &'b str,
+    file_name: &'b Path,
     pub current_byte: usize,
 }
 
 impl<'a, 'b> Lexer<'a, 'b> {
-    pub fn new(code: &'a str, file_name: &'b str) -> Self {
+    pub fn new(code: &'a str, file_name: &'b Path) -> Self {
         Self {
             code,
             file_name,
@@ -127,7 +129,7 @@ impl<'a, 'b> Lexer<'a, 'b> {
     }
 
     pub fn debug_print(code: &'a str) {
-        let mut lexer = Self::new(code, "");
+        let mut lexer = Self::new(code, Path::new(""));
         while let Some((word, location)) = lexer.next_word() {
             println!("{word:?} at {location:?}");
         }
@@ -170,7 +172,7 @@ impl<'a, 'b> Lexer<'a, 'b> {
         let (line, column) = self.get_line_column(location.start);
         format!(
             "{}:{}:{}:[{}]: {message}\n{}\n{}",
-            self.file_name,
+            self.file_name.to_string_lossy(),
             line + 1,
             column + 1,
             location.start,

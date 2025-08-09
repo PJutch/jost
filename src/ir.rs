@@ -18,6 +18,7 @@ pub enum Value {
     BoolLiteral(bool),
     Tuple(Vec<Value>, Vec<Type>),
     Array(Vec<Value>, Type),
+    Slice(Box<Value>, Box<Value>),
     Type(Type),
     Variable(i64),
     Arg(i64),
@@ -552,6 +553,7 @@ pub enum Instruction {
     ExtractValueDyn(Value, Type, Type, Value, i64),
 
     GetElementPtr(Type, Value, Value, i64),
+    GetNeighbourPtr(Type, Value, Value, i64),
 
     Bitcast(Value, Type, Type, i64),
 

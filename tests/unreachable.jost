@@ -1,0 +1,5 @@
+"test that exit requires cleaning the stack" 
+false if (pop 1 exit) else ("test unreachable case not causing type errors") print
+print
+
+false if (1 exit) else (1 2 +) 5 + print

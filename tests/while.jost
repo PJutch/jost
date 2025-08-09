@@ -1,0 +1,1 @@
+0 while (dup 5 <) (1 + "test while with counter" print) pop

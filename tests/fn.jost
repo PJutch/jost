@@ -1,0 +1,2 @@
+[] [] fn test_fn ("test function" print)
+test_fn test_fn test_fn

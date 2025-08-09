@@ -48,6 +48,7 @@ impl GenerationContext {
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
             Value::Tuple(_, _) => panic!("tuple literal got to code gen"),
             Value::Array(_, _) => panic!("array literal got to code gen"),
+            Value::Slice(_, _) => panic!("slice literal got to code gen"),
             Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
@@ -64,6 +65,7 @@ impl GenerationContext {
             Value::BoolLiteral(_) => panic!("trying to call bool literal"),
             Value::Tuple(_, _) => panic!("trying to call a tuple"),
             Value::Array(_, _) => panic!("trying to call an array"),
+            Value::Slice(_, _) => panic!("trying to call a slice"),
             Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
@@ -155,6 +157,7 @@ fn to_llvm_type(type_: &Type) -> String {
             type_string
         }
         Type::Array(type_, size) => format!("[{size} x {}]", to_llvm_type(type_)),
+        Type::Slice(_) => "{ ptr, i64}".to_owned(),
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }
@@ -289,6 +292,15 @@ fn generate_instruction_llvm(
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
                 "    %{result_var_number} = getelementptr {}, ptr {}, i64 0, i64 {}\n",
+                to_llvm_type(type_),
+                context.to_expression(ptr),
+                context.to_expression(index)
+            ));
+        }
+        Instruction::GetNeighbourPtr(type_, ptr, index, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = getelementptr {}, ptr {}, i64 {}\n",
                 to_llvm_type(type_),
                 context.to_expression(ptr),
                 context.to_expression(index)

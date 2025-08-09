@@ -1,0 +1,4 @@
+1 alloca
+dup load print
+dup 2 store
+load print

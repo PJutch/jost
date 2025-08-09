@@ -1,0 +1,3 @@
+zeroed Int : print
+zeroed 1 + print
+zeroed Bool : print

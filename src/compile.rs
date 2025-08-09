@@ -2,6 +2,7 @@ use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
 use crate::types::should_be_ptr;
+use crate::types::slice_underlying_type;
 use crate::types::type_of;
 
 use crate::lex::Lexer;
@@ -728,40 +729,100 @@ fn compile_ref_at(
     location: Location,
 ) -> Result<(), String> {
     if let Some(container) = function.nth_from_top(1, globals) {
-        if let Some(container_type) = should_be_ptr(type_of(&container, function, globals), globals)
-        {
-            if let Some(index) = function.nth_from_top(0, globals) {
-                if let Value::IntLiteral(index) = index {
+        if let Some(index) = function.nth_from_top(0, globals) {
+            match type_of(&container, function, globals) {
+                Type::Ptr(container_type) => {
+                    if let Value::IntLiteral(index) = index {
+                        function.pop(globals).expect("stack is checked above");
+                        function.pop(globals).expect("stack is checked above");
+
+                        let element_type = container_type
+                            .index_type_statically(index, globals, lexer, location)?;
+
+                        let result_var =
+                            function.new_var(Type::Ptr(Box::from(element_type.clone())));
+                        function.push(Value::Variable(result_var));
+                        function.add_instruction(Instruction::GetElementPtr(
+                            container_type.deref().clone(),
+                            container,
+                            Value::IntLiteral(index),
+                            result_var,
+                        ));
+                        return Result::Ok(());
+                    } else {
+                        function.pop(globals).expect("stack is checked above");
+                        function.pop(globals).expect("stack is checked above");
+
+                        let element_type =
+                            container_type.index_type_dinamically(globals, lexer, location)?;
+
+                        let result_var =
+                            function.new_var(Type::Ptr(Box::from(element_type.clone())));
+                        function.push(Value::Variable(result_var));
+                        function.add_instruction(Instruction::GetElementPtr(
+                            container_type.deref().clone(),
+                            container,
+                            index,
+                            result_var,
+                        ));
+                        return Result::Ok(());
+                    }
+                }
+                Type::Slice(element_type) => {
                     function.pop(globals).expect("stack is checked above");
                     function.pop(globals).expect("stack is checked above");
 
-                    let element_type =
-                        container_type.index_type_statically(index, globals, lexer, location)?;
+                    let ptr_type = Type::Ptr(element_type.clone());
 
-                    let result_var = function.new_var(Type::Ptr(Box::from(element_type.clone())));
-                    function.push(Value::Variable(result_var));
-                    function.add_instruction(Instruction::GetElementPtr(
-                        container_type.clone(),
+                    let ptr_var = function.new_var(ptr_type.clone());
+                    function.add_instruction(Instruction::ExtractValue(
                         container,
-                        Value::IntLiteral(index),
-                        result_var,
+                        slice_underlying_type(element_type.deref().clone()),
+                        ptr_type.clone(),
+                        0,
+                        ptr_var,
                     ));
-                    return Result::Ok(());
-                } else {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
 
-                    let element_type =
-                        container_type.index_type_dinamically(globals, lexer, location)?;
-
-                    let result_var = function.new_var(Type::Ptr(Box::from(element_type.clone())));
-                    function.push(Value::Variable(result_var));
-                    function.add_instruction(Instruction::GetElementPtr(
-                        container_type.clone(),
-                        container,
+                    let result_var = function.new_var(ptr_type);
+                    function.add_instruction(Instruction::GetNeighbourPtr(
+                        *element_type,
+                        Value::Variable(ptr_var),
                         index,
                         result_var,
                     ));
+
+                    function.push(Value::Variable(result_var));
+                    return Result::Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Indexable Ptr Int, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_slice_from_parts(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(ptr) = function.nth_from_top(1, globals) {
+        if should_be_ptr(type_of(&ptr, function, globals), globals).is_some() {
+            if let Some(size) = function.nth_from_top(0, globals) {
+                if merge_types(&type_of(&size, function, globals), &Type::Int, globals) {
+                    function.pop(globals).expect("stack is checked above");
+                    function.pop(globals).expect("stack is checked above");
+
+                    function.push(Value::Slice(Box::from(ptr), Box::from(size)));
+
                     return Result::Ok(());
                 }
             }
@@ -771,7 +832,49 @@ fn compile_ref_at(
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected Indexable Ptr Int, found {}",
+            "expected A Ptr Int, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_to_slice(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(ptr) = function.nth_from_top(0, globals) {
+        if let Some(contaner_type) = should_be_ptr(type_of(&ptr, function, globals), globals) {
+            let element_type = contaner_type
+                .index_type_dinamically(globals, lexer, location)?
+                .clone();
+            function.pop(globals).expect("stack is checked above");
+
+            let ptr_var = function.new_var(Type::Ptr(Box::from(element_type)));
+            function.add_instruction(Instruction::GetElementPtr(
+                contaner_type.clone(),
+                ptr.clone(),
+                Value::IntLiteral(0),
+                ptr_var,
+            ));
+
+            function.push(Value::Slice(
+                Box::from(Value::Variable(ptr_var)),
+                Box::from(Value::Length(
+                    Box::from(Value::Zeroed(contaner_type, location)),
+                    location,
+                )),
+            ));
+
+            return Result::Ok(());
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected A n Array Ptr,  found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -954,6 +1057,10 @@ fn compile_block(
                 let tuple = function.pop_of_any_type(globals, location, lexer)?;
                 function.push(Value::Length(Box::new(tuple), location));
             }
+            Word::Id("slice_from_parts") => {
+                compile_slice_from_parts(function, globals, lexer, location)?
+            }
+            Word::Id("to_slice") => compile_to_slice(function, globals, lexer, location)?,
             Word::Id("(") => {
                 let lambda = compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));

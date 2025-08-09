@@ -1,0 +1,4 @@
+"test arg" "test arg 2"
+[] String , String , [] String , String , lambda (String : dup print) call
+print
+print

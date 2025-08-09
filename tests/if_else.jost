@@ -1,0 +1,2 @@
+true if ("test then" print) else ("test else" print)
+false if ("test then" print) else ("test else" print)
