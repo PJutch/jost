@@ -206,7 +206,7 @@ fn compile_file(
                     .read_to_string(&mut captured_output)?;
 
                 if expected_output != captured_output {
-                    return Result::Err(Box::from(format!("Captured output doesn't match expected\nCaptured output: {captured_output}Expected output: {expected_output}")));
+                    return Result::Err(Box::from(format!("Captured output doesn't match expected\nCaptured output:\n{captured_output}Expected output:\n{expected_output}")));
                 }
             }
         }

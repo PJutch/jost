@@ -1,4 +1,4 @@
-"test that exit requires cleaning the stack" 
+"test that exit requires cleaning the stack"
 false if (pop 1 exit) else ("test unreachable case not causing type errors") print
 print
 
