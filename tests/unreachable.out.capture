@@ -1,3 +1,0 @@
-test unreachable case not causing type errors
-test that exit requires cleaning the stack
-8
