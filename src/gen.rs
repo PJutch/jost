@@ -46,34 +46,20 @@ impl GenerationContext {
             Value::IntLiteral(value) => value.to_string(),
             Value::Int32Literal(value) => value.to_string(),
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
-            Value::Tuple(_, _) => panic!("tuple literal got to code gen"),
-            Value::Array(_, _) => panic!("array literal got to code gen"),
-            Value::Slice(_, _) => panic!("slice literal got to code gen"),
-            Value::Type(_) => panic!("types can't be used in runtime"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Undefined => "undef".to_owned(),
             Value::Zeroed(_, _) => "zeroinitializer".to_owned(),
-            Value::Length(_, _) => panic!("length value got to code gen"),
-            Value::SizeOf(_) => panic!("sizeof value got to code gen"),
+            _ => panic!("value {value:?} shouldn't get to codegen"),
         }
     }
 
     fn to_callable(&self, value: &Value) -> String {
         match value {
-            Value::IntLiteral(_) => panic!("trying to call int literal"),
-            Value::Int32Literal(_) => panic!("trying to call int32 literal"),
-            Value::BoolLiteral(_) => panic!("trying to call bool literal"),
-            Value::Tuple(_, _) => panic!("trying to call a tuple"),
-            Value::Array(_, _) => panic!("trying to call an array"),
-            Value::Slice(_, _) => panic!("trying to call a slice"),
-            Value::Type(_) => panic!("trying to call a type"),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
-            Value::Zeroed(_, _) => panic!("trying to call a null fn ptr"),
             Value::Undefined => "undef".to_owned(),
-            Value::Length(_, _) => panic!("trying to call a length value"),
-            Value::SizeOf(_) => panic!("trying to call a sizeof value"),
+            _ => panic!("value {value:?} isn't callable"),
         }
     }
 
@@ -160,6 +146,7 @@ fn to_llvm_type(type_: &Type) -> String {
         }
         Type::Array(type_, size) => format!("[{size} x {}]", to_llvm_type(type_)),
         Type::Slice(_) => "{ ptr, i64}".to_owned(),
+        Type::Vec(_) => "{ { ptr, i64 }, i64 }".to_owned(),
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }
@@ -273,6 +260,14 @@ fn generate_instruction_llvm(
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
                 "    %{result_var_number} = call ptr @malloc(i64 {})\n",
+                context.to_expression(size)
+            ));
+        }
+        Instruction::Realloc(ptr, size, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = call ptr @realloc(ptr {}, i64 {})\n",
+                context.to_expression(ptr),
                 context.to_expression(size)
             ));
         }
@@ -659,6 +654,7 @@ pub fn generate_llvm(
     context.append("declare ptr @gets_s(ptr, i64)\n");
     context.append("declare i32 @strcmp(ptr, ptr)\n");
     context.append("declare ptr @malloc(i64)\n");
+    context.append("declare ptr @realloc(i64)\n");
     context.append("declare void @free(ptr)\n");
 
     context.append("@__string_buf = global [256 x i8] zeroinitializer, align 1\n");

@@ -28,6 +28,7 @@ pub enum Type {
     Tuple(Vec<Type>),
     Array(Box<Type>, i64),
     Slice(Box<Type>),
+    Vec(Box<Type>),
     Typ,
     TypVar(i64),
 }
@@ -59,7 +60,9 @@ impl Type {
 
     pub fn all_elements_type(&self) -> &Type {
         match self {
-            Type::Ptr(type_) | Type::Array(type_, _) | Type::Slice(type_) => type_.as_ref(),
+            Type::Ptr(type_) | Type::Array(type_, _) | Type::Slice(type_) | Type::Vec(type_) => {
+                type_.as_ref()
+            }
             Type::Tuple(_) => panic!("tuple elements are of different types"),
             Type::TypVar(_) => todo!("handle type vars"),
             _ => panic!("type has no elements"),
@@ -148,6 +151,7 @@ impl Type {
             }
             Type::Array(type_, _) => type_.alignment()?,
             Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).alignment()?,
+            Type::Vec(type_) => vec_underlying_type(type_.deref().clone()).alignment()?,
             Type::Typ => {
                 return Result::Err("types don't have a runtime representation".to_owned())
             }
@@ -171,6 +175,7 @@ impl Type {
             }
             Type::Array(type_, size) => type_.byte_size()? * size,
             Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).byte_size()?,
+            Type::Vec(type_) => vec_underlying_type(type_.deref().clone()).byte_size()?,
             Type::Typ => {
                 return Result::Err("types don't have a runtime representation".to_owned())
             }
@@ -183,6 +188,10 @@ pub fn slice_underlying_type(element_type: Type) -> Type {
     Type::Tuple(Vec::from([Type::Ptr(Box::from(element_type)), Type::Int]))
 }
 
+pub fn vec_underlying_type(element_type: Type) -> Type {
+    Type::Tuple(Vec::from([Type::Slice(Box::from(element_type)), Type::Int]))
+}
+
 fn check_can_be_zeroed(
     type_: &Type,
     globals: &Globals,
@@ -190,8 +199,8 @@ fn check_can_be_zeroed(
     location: Location,
 ) -> Result<(), String> {
     match type_ {
-        Type::Int | Type::Int32 | Type::Bool => Result::Ok(()),
-        Type::Ptr(_) | Type::Slice(_) | Type::String | Type::FnPtr(_, _) | Type::Typ => {
+        Type::Int | Type::Int32 | Type::Bool | Type::Slice(_) | Type::Vec(_) => Result::Ok(()),
+        Type::Ptr(_) | Type::String | Type::FnPtr(_, _) | Type::Typ => {
             Result::Err(lexer.make_error_report(
                 location,
                 &format!(
@@ -296,6 +305,38 @@ fn resolve_types_value(
 
             Value::Variable(result_var)
         }
+        Value::Vec(slice, size) => {
+            let slice = resolve_types_value(*slice, function, globals, lexer)?;
+            let size = resolve_types_value(*size, function, globals, lexer)?;
+
+            let element_type = type_of(&slice, function, globals)
+                .all_elements_type()
+                .clone();
+            let vec_type = Type::Vec(Box::from(element_type.clone()));
+            let slice_type = Type::Slice(Box::from(element_type.clone()));
+
+            let with_slice_var = function.new_var(vec_type.clone());
+            function.add_instruction(Instruction::InsertValue(
+                Value::Undefined,
+                vec_underlying_type(element_type.clone()),
+                slice,
+                slice_type,
+                0,
+                with_slice_var,
+            ));
+
+            let result_var = function.new_var(vec_type);
+            function.add_instruction(Instruction::InsertValue(
+                Value::Variable(with_slice_var),
+                vec_underlying_type(element_type),
+                size,
+                Type::Int,
+                1,
+                result_var,
+            ));
+
+            Value::Variable(result_var)
+        }
         Value::Type(type_) => Value::Type(resolve_actual_type(&type_, globals, lexer)?),
         Value::Zeroed(ref type_, location) => {
             check_can_be_zeroed(
@@ -317,6 +358,17 @@ fn resolve_types_value(
                     function.add_instruction(Instruction::ExtractValue(
                         value,
                         slice_underlying_type(*element_type),
+                        Type::Int,
+                        1,
+                        result_var,
+                    ));
+                    Value::Variable(result_var)
+                }
+                Type::Vec(element_type) => {
+                    let result_var = function.new_var(Type::Int);
+                    function.add_instruction(Instruction::ExtractValue(
+                        value,
+                        vec_underlying_type(*element_type),
                         Type::Int,
                         1,
                         result_var,
@@ -394,6 +446,7 @@ impl DisplayTypesContext {
                 self.display_type(type_.as_ref(), globals)
             ),
             Type::Slice(type_) => format!("{} Slice", self.display_type(type_.as_ref(), globals)),
+            Type::Vec(type_) => format!("{} Vec", self.display_type(type_.as_ref(), globals)),
             Type::Typ => "Type".to_owned(),
             Type::TypVar(i) => self.type_var_name(i),
         }
@@ -455,6 +508,9 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
         Value::Array(values, type_) => Type::Array(Box::from(type_.clone()), values.len() as i64),
         Value::Slice(ptr, _) => Type::Slice(Box::from(
+            type_of(ptr, function, globals).all_elements_type().clone(),
+        )),
+        Value::Vec(ptr, _) => Type::Vec(Box::from(
             type_of(ptr, function, globals).all_elements_type().clone(),
         )),
         Value::Type(_) => Type::Typ,
@@ -581,6 +637,7 @@ fn resolve_print(
             }
         }
         Type::Slice(_) => todo!("implement print for slice"),
+        Type::Vec(_) => todo!("implement print for vec"),
         Type::FnPtr(_, _) | Type::Ptr(_) => function.add_instruction(Instruction::Putstr(
             Value::Global(globals.new_string(&display_type(&type_, globals))),
         )),
@@ -632,6 +689,14 @@ fn resolve_destroy(value: Value, type_: Type, function: &mut Function) -> bool {
                 function,
             )
         }
+        Type::Vec(element_type) => {
+            // TODO: destroy vec contents
+            resolve_destroy(
+                value,
+                vec_underlying_type(element_type.deref().clone()),
+                function,
+            )
+        }
         _ => false,
     }
 }
@@ -671,7 +736,7 @@ fn resolve_input(
                 result_var,
             ));
         }
-        Type::Tuple(_) | Type::Array(_, _) | Type::Slice(_) => todo!("input lists"),
+        Type::Tuple(_) | Type::Array(_, _) | Type::Slice(_) | Type::Vec(_) => todo!("input lists"),
         Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
             return Result::Err(lexer.make_error_report(
                 location,
@@ -744,6 +809,11 @@ fn resolve_types_instruction(
         Instruction::Malloc(size, result_var) => {
             let size = resolve_types_value(size, function, globals, lexer)?;
             function.add_instruction(Instruction::Malloc(size, result_var));
+        }
+        Instruction::Realloc(ptr, size, result_var) => {
+            let ptr = resolve_types_value(ptr, function, globals, lexer)?;
+            let size = resolve_types_value(size, function, globals, lexer)?;
+            function.add_instruction(Instruction::Realloc(ptr, size, result_var));
         }
         Instruction::Free(ptr) => {
             let ptr = resolve_types_value(ptr, function, globals, lexer)?;
@@ -1013,6 +1083,7 @@ pub fn resolve_type(type_: &Type, globals: &Globals) -> Type {
         }
         Type::Ptr(type_) => Type::Ptr(Box::from(resolve_type(type_.as_ref(), globals))),
         Type::Slice(type_) => Type::Slice(Box::from(resolve_type(type_.as_ref(), globals))),
+        Type::Vec(type_) => Type::Vec(Box::from(resolve_type(type_.as_ref(), globals))),
         _ => type_.clone(),
     }
 }

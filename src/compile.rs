@@ -20,6 +20,7 @@ use crate::ir::Scope;
 use crate::ir::Value;
 
 use crate::types::resolve_types_function;
+use crate::types::vec_underlying_type;
 use crate::types::Type;
 
 use std::cmp;
@@ -722,7 +723,50 @@ fn compile_set_at(
     ))
 }
 
-fn compile_ref_at(
+fn compile_slice_refat(
+    slice: Value,
+    index: Value,
+    element_type: Type,
+    function: &mut Function,
+) -> i64 {
+    let ptr_type = Type::Ptr(Box::from(element_type.clone()));
+
+    let ptr_var = function.new_var(ptr_type.clone());
+    function.add_instruction(Instruction::ExtractValue(
+        slice,
+        slice_underlying_type(element_type.clone()),
+        ptr_type.clone(),
+        0,
+        ptr_var,
+    ));
+
+    let result_var = function.new_var(ptr_type);
+    function.add_instruction(Instruction::GetNeighbourPtr(
+        element_type,
+        Value::Variable(ptr_var),
+        index,
+        result_var,
+    ));
+
+    result_var
+}
+
+fn compile_vec_refat(vec: Value, index: Value, element_type: Type, function: &mut Function) -> i64 {
+    let slice_type = Type::Slice(Box::from(element_type.clone()));
+
+    let slice_var = function.new_var(slice_type.clone());
+    function.add_instruction(Instruction::ExtractValue(
+        vec,
+        vec_underlying_type(element_type.clone()),
+        slice_type.clone(),
+        0,
+        slice_var,
+    ));
+
+    compile_slice_refat(Value::Variable(slice_var), index, element_type, function)
+}
+
+fn compile_refat(
     function: &mut Function,
     globals: &mut Globals,
     lexer: &Lexer,
@@ -730,12 +774,12 @@ fn compile_ref_at(
 ) -> Result<(), String> {
     if let Some(container) = function.nth_from_top(1, globals) {
         if let Some(index) = function.nth_from_top(0, globals) {
+            function.pop(globals).expect("stack is checked above");
+            function.pop(globals).expect("stack is checked above");
+
             match type_of(&container, function, globals) {
                 Type::Ptr(container_type) => {
                     if let Value::IntLiteral(index) = index {
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-
                         let element_type = container_type
                             .index_type_statically(index, globals, lexer, location)?;
 
@@ -750,9 +794,6 @@ fn compile_ref_at(
                         ));
                         return Result::Ok(());
                     } else {
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-
                         let element_type =
                             container_type.index_type_dinamically(globals, lexer, location)?;
 
@@ -769,28 +810,12 @@ fn compile_ref_at(
                     }
                 }
                 Type::Slice(element_type) => {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
-
-                    let ptr_type = Type::Ptr(element_type.clone());
-
-                    let ptr_var = function.new_var(ptr_type.clone());
-                    function.add_instruction(Instruction::ExtractValue(
-                        container,
-                        slice_underlying_type(element_type.deref().clone()),
-                        ptr_type.clone(),
-                        0,
-                        ptr_var,
-                    ));
-
-                    let result_var = function.new_var(ptr_type);
-                    function.add_instruction(Instruction::GetNeighbourPtr(
-                        *element_type,
-                        Value::Variable(ptr_var),
-                        index,
-                        result_var,
-                    ));
-
+                    let result_var = compile_slice_refat(container, index, *element_type, function);
+                    function.push(Value::Variable(result_var));
+                    return Result::Ok(());
+                }
+                Type::Vec(element_type) => {
+                    let result_var = compile_vec_refat(container, index, *element_type, function);
                     function.push(Value::Variable(result_var));
                     return Result::Ok(());
                 }
@@ -802,7 +827,155 @@ fn compile_ref_at(
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected Indexable Ptr Int, found {}",
+            "expected Indexable Ptr, A Slice or A Vec Int, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_vec_append(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(vec) = function.nth_from_top(1, globals) {
+        let vec_type = type_of(&vec, function, globals);
+        if let Type::Vec(element_type) = &vec_type {
+            if let Some(value) = function.nth_from_top(0, globals) {
+                if merge_types(&type_of(&value, function, globals), element_type, globals) {
+                    function.pop(globals).expect("stack is checked above");
+                    function.pop(globals).expect("stack is checked above");
+
+                    let slice_type = Type::Slice(element_type.clone());
+                    let slice_var = function.new_var(slice_type.clone());
+                    function.add_instruction(Instruction::ExtractValue(
+                        vec.clone(),
+                        vec_underlying_type(element_type.deref().clone()),
+                        slice_type.clone(),
+                        0,
+                        slice_var,
+                    ));
+
+                    let capacity = Value::Length(Box::from(Value::Variable(slice_var)), location);
+                    let size = Value::Length(Box::from(vec.clone()), location);
+
+                    let condition_var = function.new_var(Type::Bool);
+                    function.add_instruction(Instruction::Relational(
+                        Relational::Eq,
+                        capacity.clone(),
+                        size.clone(),
+                        condition_var,
+                    ));
+
+                    function.new_scope(false);
+
+                    let ptr_type = Type::Slice(element_type.clone());
+                    let ptr_var = function.new_var(ptr_type.clone());
+                    function.add_instruction(Instruction::ExtractValue(
+                        Value::Variable(slice_var),
+                        slice_underlying_type(element_type.deref().clone()),
+                        ptr_type.clone(),
+                        0,
+                        ptr_var,
+                    ));
+
+                    let new_capacity_var = function.new_var(Type::Int);
+                    function.add_instruction(Instruction::Arithemtic(
+                        Arithemtic::Mul,
+                        capacity,
+                        Value::IntLiteral(2),
+                        new_capacity_var,
+                    ));
+
+                    let new_byte_capacity_var = function.new_var(Type::Int);
+                    function.add_instruction(Instruction::Arithemtic(
+                        Arithemtic::Mul,
+                        Value::Variable(new_capacity_var),
+                        Value::SizeOf(element_type.deref().clone()),
+                        new_byte_capacity_var,
+                    ));
+
+                    let new_ptr_var = function.new_var(ptr_type.clone());
+                    function.add_instruction(Instruction::Realloc(
+                        Value::Variable(ptr_var),
+                        Value::Variable(new_byte_capacity_var),
+                        new_ptr_var,
+                    ));
+
+                    let new_vec_var = function.new_var(vec_type.clone());
+                    function.add_instruction(Instruction::InsertValue(
+                        vec.clone(),
+                        vec_underlying_type(element_type.deref().clone()),
+                        Value::Slice(
+                            Box::from(Value::Variable(new_ptr_var)),
+                            Box::from(Value::Variable(new_capacity_var)),
+                        ),
+                        slice_type,
+                        0,
+                        new_vec_var,
+                    ));
+
+                    let then_scope = function.scopes.pop().expect("scope was pushed above");
+
+                    function.new_scope(false);
+                    let else_scope = function.scopes.pop().expect("scope was pushed above");
+
+                    let phi_var = function.new_var(vec_type.clone());
+                    function.add_instruction(Instruction::If(
+                        Value::Variable(condition_var),
+                        then_scope,
+                        else_scope,
+                        Vec::from([Phi {
+                            result_type: vec_type.clone(),
+                            case1: Value::Variable(new_vec_var),
+                            case2: vec,
+                            result_var: phi_var,
+                        }]),
+                    ));
+
+                    let ref_var = compile_vec_refat(
+                        Value::Variable(phi_var),
+                        size.clone(),
+                        element_type.deref().clone(),
+                        function,
+                    );
+
+                    function.add_instruction(Instruction::Store(
+                        Value::Variable(ref_var),
+                        element_type.deref().clone(),
+                        value,
+                    ));
+
+                    let new_size_var = function.new_var(Type::Int);
+                    function.add_instruction(Instruction::Arithemtic(
+                        Arithemtic::Add,
+                        size,
+                        Value::IntLiteral(1),
+                        new_size_var,
+                    ));
+
+                    let result_var = function.new_var(vec_type.clone());
+                    function.add_instruction(Instruction::InsertValue(
+                        Value::Variable(phi_var),
+                        vec_type,
+                        Value::Variable(new_size_var),
+                        Type::Int,
+                        1,
+                        result_var,
+                    ));
+
+                    function.push(Value::Variable(result_var));
+                    return Result::Ok(());
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected A Vec A, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -1074,7 +1247,7 @@ fn compile_block(
             Word::Id(",") => compile_append(function, globals, lexer, location)?,
             Word::Id("at") => compile_at(function, globals, lexer, location)?,
             Word::Id("setat") => compile_set_at(function, globals, lexer, location)?,
-            Word::Id("refat") => compile_ref_at(function, globals, lexer, location)?,
+            Word::Id("refat") => compile_refat(function, globals, lexer, location)?,
             Word::Id("len") => {
                 let tuple = function.pop_of_any_type(globals, location, lexer)?;
                 function.push(Value::Length(Box::new(tuple), location));
@@ -1209,6 +1382,11 @@ fn compile_block(
                 let type_ = type_of(&value, function, globals);
                 function.add_instruction(Instruction::Destroy(value, type_, location));
             }
+            Word::Id("empty_vec") => function.push(Value::Zeroed(
+                Type::Vec(Box::from(Type::TypVar(globals.new_type_var(location)))),
+                location,
+            )),
+            Word::Id("append") => compile_vec_append(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
                 return Err(lexer.make_error_report(location, &format!("Unknown word {id}")))

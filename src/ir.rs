@@ -19,6 +19,7 @@ pub enum Value {
     Tuple(Vec<Value>, Vec<Type>),
     Array(Vec<Value>, Type),
     Slice(Box<Value>, Box<Value>),
+    Vec(Box<Value>, Box<Value>),
     Type(Type),
     Variable(i64),
     Arg(i64),
@@ -546,6 +547,7 @@ pub enum Instruction {
     Store(Value, Type, Value),
 
     Malloc(Value, i64),
+    Realloc(Value, Value, i64),
     Free(Value),
 
     Destroy(Value, Type, Location),
