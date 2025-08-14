@@ -880,6 +880,28 @@ fn compile_to_slice(
     ))
 }
 
+fn compile_free(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(ptr) = function.nth_from_top(0, globals) {
+        if should_be_ptr(type_of(&ptr, function, globals), globals).is_some() {
+            function.add_instruction(Instruction::Free(ptr));
+            return Result::Ok(());
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected A Ptr,  found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -1123,6 +1145,22 @@ fn compile_block(
             }
             Word::Id("load") => compile_load(function, globals, lexer, location)?,
             Word::Id("store") => compile_store(function, globals, lexer, location)?,
+            Word::Id("new") => {
+                let value = function.pop_of_any_type(globals, location, lexer)?;
+                let type_ = type_of(&value, function, globals);
+                let result_var = function.new_var(Type::Ptr(Box::from(type_.clone())));
+                function.add_instruction(Instruction::Malloc(
+                    Value::SizeOf(type_.clone()),
+                    result_var,
+                ));
+                function.add_instruction(Instruction::Store(
+                    Value::Variable(result_var),
+                    type_,
+                    value,
+                ));
+                function.push(Value::Variable(result_var));
+            }
+            Word::Id("free") => compile_free(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
                 return Err(lexer.make_error_report(location, &format!("Unknown word {id}")))

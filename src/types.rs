@@ -12,6 +12,7 @@ use crate::ir::Value;
 use std::collections::HashMap;
 
 use core::panic;
+use std::cmp::max;
 use std::iter::zip;
 use std::mem;
 use std::ops::Deref;
@@ -29,6 +30,14 @@ pub enum Type {
     Slice(Box<Type>),
     Typ,
     TypVar(i64),
+}
+
+fn align_offset(offset: i64, alignment: i64) -> i64 {
+    if offset % alignment == 0 {
+        offset
+    } else {
+        offset - offset % alignment + alignment
+    }
 }
 
 impl Type {
@@ -123,6 +132,50 @@ impl Type {
                 &format!("{} can't be indexed", display_type(self, globals)),
             )),
         }
+    }
+
+    fn alignment(&self) -> Result<i64, String> {
+        Result::Ok(match self {
+            Type::Int | Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => 8,
+            Type::Int32 => 4,
+            Type::Bool => 1,
+            Type::Tuple(types) => {
+                let mut alignment = 1;
+                for type_ in types {
+                    alignment = max(alignment, type_.alignment()?);
+                }
+                alignment
+            }
+            Type::Array(type_, _) => type_.alignment()?,
+            Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).alignment()?,
+            Type::Typ => {
+                return Result::Err("types don't have a runtime representation".to_owned())
+            }
+            Type::TypVar(_) => {
+                return Result::Err("trying to get alignment of a type var".to_owned())
+            }
+        })
+    }
+
+    pub fn byte_size(&self) -> Result<i64, String> {
+        Result::Ok(match self {
+            Type::Int | Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => 8,
+            Type::Int32 => 4,
+            Type::Bool => 1,
+            Type::Tuple(types) => {
+                let mut size = 0;
+                for type_ in types {
+                    size = align_offset(size, type_.alignment()?) + type_.byte_size()?;
+                }
+                align_offset(size, self.alignment()?)
+            }
+            Type::Array(type_, size) => type_.byte_size()? * size,
+            Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).byte_size()?,
+            Type::Typ => {
+                return Result::Err("types don't have a runtime representation".to_owned())
+            }
+            Type::TypVar(_) => return Result::Err("trying to get size of a type var".to_owned()),
+        })
     }
 }
 
@@ -281,6 +334,7 @@ fn resolve_types_value(
                 }
             }
         }
+        Value::SizeOf(type_) => Value::IntLiteral(type_.byte_size()?),
         _ => value,
     })
 }
@@ -393,7 +447,7 @@ pub fn resolve_types_function(
 
 pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
     match value {
-        Value::IntLiteral(_) | Value::Length(_, _) => Type::Int,
+        Value::IntLiteral(_) | Value::Length(_, _) | Value::SizeOf(_) => Type::Int,
         Value::Int32Literal(_) => Type::Int32,
         Value::BoolLiteral(_) => Type::Bool,
         Value::Tuple(_, types) => Type::Tuple(types.clone()),
@@ -645,6 +699,14 @@ fn resolve_types_instruction(
                 resolve_actual_type(&type_, globals, lexer)?,
                 value,
             ))
+        }
+        Instruction::Malloc(size, result_var) => {
+            let size = resolve_types_value(size, function, globals, lexer)?;
+            function.add_instruction(Instruction::Malloc(size, result_var));
+        }
+        Instruction::Free(ptr) => {
+            let ptr = resolve_types_value(ptr, function, globals, lexer)?;
+            function.add_instruction(Instruction::Free(ptr));
         }
         Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
             let tuple = resolve_types_value(tuple, function, globals, lexer)?;

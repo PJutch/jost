@@ -55,6 +55,7 @@ impl GenerationContext {
             Value::Undefined => "undef".to_owned(),
             Value::Zeroed(_, _) => "zeroinitializer".to_owned(),
             Value::Length(_, _) => panic!("length value got to code gen"),
+            Value::SizeOf(_) => panic!("sizeof value got to code gen"),
         }
     }
 
@@ -71,7 +72,8 @@ impl GenerationContext {
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
             Value::Zeroed(_, _) => panic!("trying to call a null fn ptr"),
             Value::Undefined => "undef".to_owned(),
-            Value::Length(_, _) => panic!("length value got to code gen"),
+            Value::Length(_, _) => panic!("trying to call a length value"),
+            Value::SizeOf(_) => panic!("trying to call a sizeof value"),
         }
     }
 
@@ -261,6 +263,19 @@ fn generate_instruction_llvm(
                 "    store {} {}, ptr {}\n",
                 to_llvm_type(type_),
                 context.to_expression(value),
+                context.to_expression(ptr)
+            ));
+        }
+        Instruction::Malloc(size, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
+            context.append(&format!(
+                "    %{result_var_number} = call ptr @malloc(i64 {})\n",
+                context.to_expression(size)
+            ));
+        }
+        Instruction::Free(ptr) => {
+            context.append(&format!(
+                "    call void @free(ptr {})\n",
                 context.to_expression(ptr)
             ));
         }
@@ -639,6 +654,8 @@ pub fn generate_llvm(
     context.append("declare i32 @printf(ptr, ...)\n");
     context.append("declare ptr @gets_s(ptr, i64)\n");
     context.append("declare i32 @strcmp(ptr, ptr)\n");
+    context.append("declare ptr @malloc(i64)\n");
+    context.append("declare void @free(ptr)\n");
 
     context.append("@__string_buf = global [256 x i8] zeroinitializer, align 1\n");
     context.append("@__string_true = constant [5 x i8] c\"true\\00\"\n");

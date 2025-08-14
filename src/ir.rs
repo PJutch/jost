@@ -27,6 +27,7 @@ pub enum Value {
     Zeroed(Type, Location),
     Undefined,
     Length(Box<Value>, Location),
+    SizeOf(Type),
 }
 
 impl Value {
@@ -545,6 +546,9 @@ pub enum Instruction {
     Alloca(Value, Type, i64),
     Load(Value, Type, i64),
     Store(Value, Type, Value),
+
+    Malloc(Value, i64),
+    Free(Value),
 
     InsertValue(Value, Type, Value, Type, i64, i64),
     ExtractValue(Value, Type, Type, i64, i64),
