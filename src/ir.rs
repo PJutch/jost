@@ -85,12 +85,9 @@ impl Globals {
     }
 
     pub fn new_type_var(&mut self, location: Location) -> i64 {
-        let type_var = self.last_type_var;
         self.last_type_var += 1;
-
-        self.type_var_locations.insert(type_var, location);
-
-        type_var
+        self.type_var_locations.insert(self.last_type_var, location);
+        self.last_type_var
     }
 }
 
@@ -543,12 +540,15 @@ pub enum Instruction {
     Logical(Logical, Value, Value, i64),
     Not(Value, i64),
 
-    Alloca(Value, Type, i64),
+    Alloca(Type, i64),
+    AllocaN(Type, Value, i64),
     Load(Value, Type, i64),
     Store(Value, Type, Value),
 
     Malloc(Value, i64),
     Free(Value),
+
+    Destroy(Value, Type, Location),
 
     InsertValue(Value, Type, Value, Type, i64, i64),
     ExtractValue(Value, Type, Type, i64, i64),

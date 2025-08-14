@@ -238,16 +238,19 @@ fn generate_instruction_llvm(
                 context.to_expression(value)
             ))
         }
-        Instruction::Alloca(value, type_, result_var) => {
+        Instruction::Alloca(type_, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
                 "    %{result_var_number} = alloca {}\n",
                 to_llvm_type(type_)
             ));
+        }
+        Instruction::AllocaN(type_, count, result_var) => {
+            let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
-                "    store {} {}, ptr %{result_var_number}\n",
+                "    %{result_var_number} = alloca {}, i64 {}",
                 to_llvm_type(type_),
-                context.to_expression(value)
+                context.to_expression(count)
             ));
         }
         Instruction::Load(ptr, type_, result_var) => {
@@ -279,6 +282,7 @@ fn generate_instruction_llvm(
                 context.to_expression(ptr)
             ));
         }
+        Instruction::Destroy(_, _, _) => panic!("destroy instruction got to code gen"),
         Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(

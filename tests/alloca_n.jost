@@ -1,0 +1,4 @@
+10 alloca_n
+7 refat
+dup 5 store
+load print

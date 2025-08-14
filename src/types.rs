@@ -334,7 +334,9 @@ fn resolve_types_value(
                 }
             }
         }
-        Value::SizeOf(type_) => Value::IntLiteral(type_.byte_size()?),
+        Value::SizeOf(type_) => {
+            Value::IntLiteral(resolve_actual_type(&type_, globals, lexer)?.byte_size()?)
+        }
         _ => value,
     })
 }
@@ -596,6 +598,44 @@ fn resolve_print(
     Result::Ok(())
 }
 
+fn resolve_destroy(value: Value, type_: Type, function: &mut Function) -> bool {
+    match &type_ {
+        Type::Ptr(_) => {
+            // TODO: destroy contents
+            function.add_instruction(Instruction::Free(value));
+            true
+        }
+        Type::Tuple(types) => {
+            let mut destroyable = false;
+            for (i, element_type) in types.iter().enumerate() {
+                let element_var = function.new_var(element_type.clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    value.clone(),
+                    type_.clone(),
+                    element_type.clone(),
+                    i as i64,
+                    element_var,
+                ));
+
+                if resolve_destroy(Value::Variable(element_var), element_type.clone(), function) {
+                    destroyable = true;
+                }
+            }
+            destroyable
+        }
+        Type::Array(_, _) => todo!("destroy array"),
+        Type::Slice(element_type) => {
+            // TODO: destroy slice contents
+            resolve_destroy(
+                value,
+                slice_underlying_type(element_type.deref().clone()),
+                function,
+            )
+        }
+        _ => false,
+    }
+}
+
 fn resolve_input(
     type_: Type,
     result_var: i64,
@@ -675,13 +715,14 @@ fn resolve_types_instruction(
             let value = resolve_types_value(value, function, globals, lexer)?;
             function.add_instruction(Instruction::Not(value, result_var))
         }
-        Instruction::Alloca(value, type_, result_var) => {
+        Instruction::Alloca(type_, result_var) => function.add_instruction(Instruction::Alloca(
+            resolve_actual_type(&type_, globals, lexer)?,
+            result_var,
+        )),
+        Instruction::AllocaN(type_, value, result_var) => {
+            let type_ = resolve_actual_type(&type_, globals, lexer)?;
             let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Alloca(
-                value,
-                resolve_actual_type(&type_, globals, lexer)?,
-                result_var,
-            ))
+            function.add_instruction(Instruction::AllocaN(type_, value, result_var));
         }
         Instruction::Load(ptr, type_, result_var) => {
             let ptr = resolve_types_value(ptr, function, globals, lexer)?;
@@ -708,6 +749,21 @@ fn resolve_types_instruction(
             let ptr = resolve_types_value(ptr, function, globals, lexer)?;
             function.add_instruction(Instruction::Free(ptr));
         }
+        Instruction::Destroy(value, type_, location) => {
+            if !resolve_destroy(
+                resolve_types_value(value, function, globals, lexer)?,
+                type_.clone(),
+                function,
+            ) {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!(
+                        "value of type {} doesn't need to be destroyed",
+                        display_type(&type_, globals)
+                    ),
+                ));
+            }
+        }
         Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
             let tuple = resolve_types_value(tuple, function, globals, lexer)?;
             let value = resolve_types_value(value, function, globals, lexer)?;
@@ -715,7 +771,7 @@ fn resolve_types_instruction(
                 tuple,
                 resolve_actual_type(&tuple_type, globals, lexer)?,
                 value,
-                value_type,
+                resolve_actual_type(&value_type, globals, lexer)?,
                 index,
                 result_var,
             ))
@@ -725,7 +781,7 @@ fn resolve_types_instruction(
             function.add_instruction(Instruction::ExtractValue(
                 tuple,
                 resolve_actual_type(&tuple_type, globals, lexer)?,
-                value_type,
+                resolve_actual_type(&value_type, globals, lexer)?,
                 index,
                 result_var,
             ))
@@ -737,7 +793,12 @@ fn resolve_types_instruction(
             let value_type = resolve_actual_type(&value_type, globals, lexer)?;
 
             let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
-            function.add_instruction(Instruction::Alloca(tuple, tuple_type.clone(), ptr_var));
+            function.add_instruction(Instruction::Alloca(tuple_type.clone(), ptr_var));
+            function.add_instruction(Instruction::Store(
+                Value::Variable(ptr_var),
+                tuple_type.clone(),
+                tuple,
+            ));
 
             let viewed_through_type = if let Type::Tuple(types) = &tuple_type {
                 Type::Array(Box::from(value_type.clone()), types.len() as i64)
@@ -771,7 +832,12 @@ fn resolve_types_instruction(
             let value_type = resolve_actual_type(&value_type, globals, lexer)?;
 
             let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
-            function.add_instruction(Instruction::Alloca(tuple, tuple_type.clone(), ptr_var));
+            function.add_instruction(Instruction::Alloca(tuple_type.clone(), ptr_var));
+            function.add_instruction(Instruction::Store(
+                Value::Variable(ptr_var),
+                tuple_type.clone(),
+                tuple,
+            ));
 
             let viewed_through_type = if let Type::Tuple(types) = &tuple_type {
                 Type::Array(Box::from(value_type.clone()), types.len() as i64)
@@ -794,11 +860,13 @@ fn resolve_types_instruction(
             ));
         }
         Instruction::GetElementPtr(type_, value, index, result_var) => {
+            let type_ = resolve_actual_type(&type_, globals, lexer)?;
             let value = resolve_types_value(value, function, globals, lexer)?;
             let index = resolve_types_value(index, function, globals, lexer)?;
             function.add_instruction(Instruction::GetElementPtr(type_, value, index, result_var));
         }
         Instruction::GetNeighbourPtr(type_, value, index, result_var) => {
+            let type_ = resolve_actual_type(&type_, globals, lexer)?;
             let value = resolve_types_value(value, function, globals, lexer)?;
             let index = resolve_types_value(index, function, globals, lexer)?;
             function.add_instruction(Instruction::GetNeighbourPtr(
@@ -943,6 +1011,8 @@ pub fn resolve_type(type_: &Type, globals: &Globals) -> Type {
         Type::Array(type_, size) => {
             Type::Array(Box::from(resolve_type(type_.as_ref(), globals)), *size)
         }
+        Type::Ptr(type_) => Type::Ptr(Box::from(resolve_type(type_.as_ref(), globals))),
+        Type::Slice(type_) => Type::Slice(Box::from(resolve_type(type_.as_ref(), globals))),
         _ => type_.clone(),
     }
 }

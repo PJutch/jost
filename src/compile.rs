@@ -1139,28 +1139,76 @@ fn compile_block(
             Word::Id("alloca") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;
                 let type_ = type_of(&value, function, globals);
+
                 let result_var = function.new_var(Type::Ptr(Box::from(type_.clone())));
-                function.add_instruction(Instruction::Alloca(value, type_, result_var));
+                function.add_instruction(Instruction::Alloca(type_.clone(), result_var));
+
+                function.add_instruction(Instruction::Store(
+                    Value::Variable(result_var),
+                    type_,
+                    value,
+                ));
+
                 function.push(Value::Variable(result_var));
+            }
+            Word::Id("alloca_n") => {
+                let count = function.pop_of_type(Type::Int, globals, location, lexer)?;
+                let type_ = Type::TypVar(globals.new_type_var(location));
+
+                let ptr_var = function.new_var(Type::Ptr(Box::from(type_.clone())));
+                function.add_instruction(Instruction::AllocaN(type_, count.clone(), ptr_var));
+
+                function.push(Value::Slice(
+                    Box::from(Value::Variable(ptr_var)),
+                    Box::from(count),
+                ));
             }
             Word::Id("load") => compile_load(function, globals, lexer, location)?,
             Word::Id("store") => compile_store(function, globals, lexer, location)?,
             Word::Id("new") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;
                 let type_ = type_of(&value, function, globals);
+
                 let result_var = function.new_var(Type::Ptr(Box::from(type_.clone())));
                 function.add_instruction(Instruction::Malloc(
                     Value::SizeOf(type_.clone()),
                     result_var,
                 ));
+
                 function.add_instruction(Instruction::Store(
                     Value::Variable(result_var),
                     type_,
                     value,
                 ));
+
                 function.push(Value::Variable(result_var));
             }
+            Word::Id("new_n") => {
+                let count = function.pop_of_type(Type::Int, globals, location, lexer)?;
+                let type_ = Type::TypVar(globals.new_type_var(location));
+
+                let size_var = function.new_var(Type::Int);
+                function.add_instruction(Instruction::Arithemtic(
+                    Arithemtic::Mul,
+                    count.clone(),
+                    Value::SizeOf(type_.clone()),
+                    size_var,
+                ));
+
+                let ptr_var = function.new_var(Type::Ptr(Box::from(type_)));
+                function.add_instruction(Instruction::Malloc(Value::Variable(size_var), ptr_var));
+
+                function.push(Value::Slice(
+                    Box::from(Value::Variable(ptr_var)),
+                    Box::from(count),
+                ));
+            }
             Word::Id("free") => compile_free(function, globals, lexer, location)?,
+            Word::Id("destroy") => {
+                let value = function.pop_of_any_type(globals, location, lexer)?;
+                let type_ = type_of(&value, function, globals);
+                function.add_instruction(Instruction::Destroy(value, type_, location));
+            }
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
                 return Err(lexer.make_error_report(location, &format!("Unknown word {id}")))
