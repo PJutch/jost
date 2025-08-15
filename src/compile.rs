@@ -2,6 +2,7 @@ use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
 use crate::types::should_be_ptr;
+use crate::types::should_be_vec;
 use crate::types::slice_underlying_type;
 use crate::types::type_of;
 
@@ -833,6 +834,135 @@ fn compile_refat(
     ))
 }
 
+fn compile_vec_append_impl(
+    vec: Value,
+    vec_type: &Type,
+    value: Value,
+    value_type: &Type,
+    function: &mut Function,
+    location: Location,
+) -> i64 {
+    let slice_type = Type::Slice(Box::from(value_type.clone()));
+    let slice_var = function.new_var(slice_type.clone());
+    function.add_instruction(Instruction::ExtractValue(
+        vec.clone(),
+        vec_underlying_type(value_type.clone()),
+        slice_type.clone(),
+        0,
+        slice_var,
+    ));
+
+    let capacity = Value::Length(Box::from(Value::Variable(slice_var)), location);
+    let size = Value::Length(Box::from(vec.clone()), location);
+
+    let condition_var = function.new_var(Type::Bool);
+    function.add_instruction(Instruction::Relational(
+        Relational::Eq,
+        capacity.clone(),
+        size.clone(),
+        condition_var,
+    ));
+
+    function.new_scope(false);
+
+    let ptr_type = Type::Slice(Box::from(value_type.clone()));
+    let ptr_var = function.new_var(ptr_type.clone());
+    function.add_instruction(Instruction::ExtractValue(
+        Value::Variable(slice_var),
+        slice_underlying_type(value_type.clone()),
+        ptr_type.clone(),
+        0,
+        ptr_var,
+    ));
+
+    let new_capacity_var = function.new_var(Type::Int);
+    function.add_instruction(Instruction::Arithemtic(
+        Arithemtic::Mul,
+        capacity,
+        Value::IntLiteral(2),
+        new_capacity_var,
+    ));
+
+    let new_byte_capacity_var = function.new_var(Type::Int);
+    function.add_instruction(Instruction::Arithemtic(
+        Arithemtic::Mul,
+        Value::Variable(new_capacity_var),
+        Value::SizeOf(value_type.clone()),
+        new_byte_capacity_var,
+    ));
+
+    let new_ptr_var = function.new_var(ptr_type.clone());
+    function.add_instruction(Instruction::Realloc(
+        Value::Variable(ptr_var),
+        Value::Variable(new_byte_capacity_var),
+        new_ptr_var,
+    ));
+
+    let new_vec_var = function.new_var(vec_type.clone());
+    function.add_instruction(Instruction::InsertValue(
+        vec.clone(),
+        vec_underlying_type(value_type.clone()),
+        Value::Slice(
+            Box::from(Value::Variable(new_ptr_var)),
+            Box::from(Value::Variable(new_capacity_var)),
+        ),
+        slice_type,
+        0,
+        new_vec_var,
+    ));
+
+    let then_scope = function.scopes.pop().expect("scope was pushed above");
+
+    function.new_scope(false);
+    let else_scope = function.scopes.pop().expect("scope was pushed above");
+
+    let phi_var = function.new_var(vec_type.clone());
+    function.add_instruction(Instruction::If(
+        Value::Variable(condition_var),
+        then_scope,
+        else_scope,
+        Vec::from([Phi {
+            result_type: vec_type.clone(),
+            case1: Value::Variable(new_vec_var),
+            case2: vec,
+            result_var: phi_var,
+        }]),
+    ));
+
+    let ref_var = compile_vec_refat(
+        Value::Variable(phi_var),
+        size.clone(),
+        value_type.clone(),
+        function,
+    );
+
+    function.add_instruction(Instruction::Store(
+        Value::Variable(ref_var),
+        value_type.clone(),
+        value,
+    ));
+
+    let new_size_var = function.new_var(Type::Int);
+    function.add_instruction(Instruction::Arithemtic(
+        Arithemtic::Add,
+        size,
+        Value::IntLiteral(1),
+        new_size_var,
+    ));
+
+    let result_var = function.new_var(vec_type.clone());
+    function.add_instruction(Instruction::InsertValue(
+        Value::Variable(phi_var),
+        vec_type.clone(),
+        Value::Variable(new_size_var),
+        Type::Int,
+        1,
+        result_var,
+    ));
+
+    result_var
+}
+
 fn compile_vec_append(
     function: &mut Function,
     globals: &mut Globals,
@@ -847,125 +977,16 @@ fn compile_vec_append(
                     function.pop(globals).expect("stack is checked above");
                     function.pop(globals).expect("stack is checked above");
 
-                    let slice_type = Type::Slice(element_type.clone());
-                    let slice_var = function.new_var(slice_type.clone());
-                    function.add_instruction(Instruction::ExtractValue(
-                        vec.clone(),
-                        vec_underlying_type(element_type.deref().clone()),
-                        slice_type.clone(),
-                        0,
-                        slice_var,
-                    ));
-
-                    let capacity = Value::Length(Box::from(Value::Variable(slice_var)), location);
-                    let size = Value::Length(Box::from(vec.clone()), location);
-
-                    let condition_var = function.new_var(Type::Bool);
-                    function.add_instruction(Instruction::Relational(
-                        Relational::Eq,
-                        capacity.clone(),
-                        size.clone(),
-                        condition_var,
-                    ));
-
-                    function.new_scope(false);
-
-                    let ptr_type = Type::Slice(element_type.clone());
-                    let ptr_var = function.new_var(ptr_type.clone());
-                    function.add_instruction(Instruction::ExtractValue(
-                        Value::Variable(slice_var),
-                        slice_underlying_type(element_type.deref().clone()),
-                        ptr_type.clone(),
-                        0,
-                        ptr_var,
-                    ));
-
-                    let new_capacity_var = function.new_var(Type::Int);
-                    function.add_instruction(Instruction::Arithemtic(
-                        Arithemtic::Mul,
-                        capacity,
-                        Value::IntLiteral(2),
-                        new_capacity_var,
-                    ));
-
-                    let new_byte_capacity_var = function.new_var(Type::Int);
-                    function.add_instruction(Instruction::Arithemtic(
-                        Arithemtic::Mul,
-                        Value::Variable(new_capacity_var),
-                        Value::SizeOf(element_type.deref().clone()),
-                        new_byte_capacity_var,
-                    ));
-
-                    let new_ptr_var = function.new_var(ptr_type.clone());
-                    function.add_instruction(Instruction::Realloc(
-                        Value::Variable(ptr_var),
-                        Value::Variable(new_byte_capacity_var),
-                        new_ptr_var,
-                    ));
-
-                    let new_vec_var = function.new_var(vec_type.clone());
-                    function.add_instruction(Instruction::InsertValue(
-                        vec.clone(),
-                        vec_underlying_type(element_type.deref().clone()),
-                        Value::Slice(
-                            Box::from(Value::Variable(new_ptr_var)),
-                            Box::from(Value::Variable(new_capacity_var)),
-                        ),
-                        slice_type,
-                        0,
-                        new_vec_var,
-                    ));
-
-                    let then_scope = function.scopes.pop().expect("scope was pushed above");
-
-                    function.new_scope(false);
-                    let else_scope = function.scopes.pop().expect("scope was pushed above");
-
-                    let phi_var = function.new_var(vec_type.clone());
-                    function.add_instruction(Instruction::If(
-                        Value::Variable(condition_var),
-                        then_scope,
-                        else_scope,
-                        Vec::from([Phi {
-                            result_type: vec_type.clone(),
-                            case1: Value::Variable(new_vec_var),
-                            case2: vec,
-                            result_var: phi_var,
-                        }]),
-                    ));
-
-                    let ref_var = compile_vec_refat(
-                        Value::Variable(phi_var),
-                        size.clone(),
-                        element_type.deref().clone(),
-                        function,
-                    );
-
-                    function.add_instruction(Instruction::Store(
-                        Value::Variable(ref_var),
-                        element_type.deref().clone(),
+                    let result_var = compile_vec_append_impl(
+                        vec,
+                        &vec_type,
                         value,
-                    ));
-
-                    let new_size_var = function.new_var(Type::Int);
-                    function.add_instruction(Instruction::Arithemtic(
-                        Arithemtic::Add,
-                        size,
-                        Value::IntLiteral(1),
-                        new_size_var,
-                    ));
-
-                    let result_var = function.new_var(vec_type.clone());
-                    function.add_instruction(Instruction::InsertValue(
-                        Value::Variable(phi_var),
-                        vec_type,
-                        Value::Variable(new_size_var),
-                        Type::Int,
-                        1,
-                        result_var,
-                    ));
-
+                        element_type,
+                        function,
+                        location,
+                    );
                     function.push(Value::Variable(result_var));
+
                     return Result::Ok(());
                 }
             }
@@ -976,6 +997,104 @@ fn compile_vec_append(
         location,
         &format!(
             "expected A Vec A, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_concat(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(append_to) = function.nth_from_top(1, globals) {
+        if let Some(append_from) = function.nth_from_top(0, globals) {
+            if let Some(element_type) =
+                should_be_vec(type_of(&append_to, function, globals), globals)
+            {
+                if merge_types(
+                    &type_of(&append_from, function, globals),
+                    &Type::Vec(Box::from(element_type.clone())),
+                    globals,
+                ) {
+                    let vec_type = Type::Vec(Box::from(element_type.clone()));
+                    let append_to_var = function.new_var(vec_type.clone());
+                    let counter_var = function.new_var(Type::Int);
+
+                    function.new_scope(true);
+                    let condition_var = function.new_var(Type::Bool);
+                    function.add_instruction(Instruction::Relational(
+                        Relational::Eq,
+                        Value::Variable(counter_var),
+                        Value::Length(Box::from(append_from.clone()), location),
+                        condition_var,
+                    ));
+
+                    function.new_scope(false);
+
+                    let ptr_var = compile_vec_refat(
+                        append_from,
+                        Value::Variable(counter_var),
+                        element_type.clone(),
+                        function,
+                    );
+
+                    let element_var = function.new_var(element_type.clone());
+                    function.add_instruction(Instruction::Load(
+                        Value::Variable(ptr_var),
+                        element_type.clone(),
+                        element_var,
+                    ));
+
+                    let new_append_to_var = compile_vec_append_impl(
+                        Value::Variable(append_to_var),
+                        &vec_type,
+                        Value::Variable(element_var),
+                        &element_type,
+                        function,
+                        location,
+                    );
+
+                    let new_counter_var = function.new_var(Type::Int);
+                    function.add_instruction(Instruction::Arithemtic(
+                        Arithemtic::Add,
+                        Value::Variable(condition_var),
+                        Value::IntLiteral(1),
+                        new_counter_var,
+                    ));
+
+                    let body_scope = function.scopes.pop().expect("scope was created above");
+                    let test_scope = function.scopes.pop().expect("scope was created above");
+
+                    function.add_instruction(Instruction::While(
+                        Vec::from([
+                            Phi {
+                                result_type: vec_type,
+                                case1: append_to,
+                                case2: Value::Variable(new_append_to_var),
+                                result_var: append_to_var,
+                            },
+                            Phi {
+                                result_type: Type::Int,
+                                case1: Value::IntLiteral(0),
+                                case2: Value::Variable(new_counter_var),
+                                result_var: counter_var,
+                            },
+                        ]),
+                        test_scope,
+                        Value::Variable(condition_var),
+                        body_scope,
+                    ));
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected A Vec A Vec, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -1385,6 +1504,7 @@ fn compile_block(
                 function.add_instruction(Instruction::Clone(value, type_, result_var, location));
                 function.push(Value::Variable(result_var));
             }
+            Word::Id("concat") => compile_concat(function, globals, lexer, location)?,
             Word::Id("destroy") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;
                 let type_ = type_of(&value, function, globals);
