@@ -1,0 +1,5 @@
+1 new
+dup clone swp
+dup 2 store
+dup load print
+free free

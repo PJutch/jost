@@ -546,10 +546,13 @@ pub enum Instruction {
     Load(Value, Type, i64),
     Store(Value, Type, Value),
 
+    Memcopy(Value, Value, Value),
+
     Malloc(Value, i64),
     Realloc(Value, Value, i64),
     Free(Value),
 
+    Clone(Value, Type, i64, Location),
     Destroy(Value, Type, Location),
 
     InsertValue(Value, Type, Value, Type, i64, i64),

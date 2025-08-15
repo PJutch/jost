@@ -1,0 +1,9 @@
+5 new_n
+  dup 3 refat 1 store
+  dup clone swp
+  dup 3 refat 2 store
+
+  swp
+  dup 3 refat load print
+  destroy
+destroy

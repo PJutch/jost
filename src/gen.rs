@@ -175,7 +175,6 @@ fn generate_instruction_llvm(
     context: &mut GenerationContext,
 ) -> Result<(), String> {
     match instruction {
-        Instruction::Bogus => panic!("bogus instruction got to code gen"),
         Instruction::Arithemtic(op, a, b, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
@@ -256,6 +255,15 @@ fn generate_instruction_llvm(
                 context.to_expression(ptr)
             ));
         }
+        Instruction::Memcopy(from, to, size) => {
+            let var_number = context.next_var_number_anonymous();
+            context.append(&format!(
+                "    %{var_number} = call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                context.to_expression(from),
+                context.to_expression(to),
+                context.to_expression(size)
+            ));
+        }
         Instruction::Malloc(size, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
@@ -277,7 +285,6 @@ fn generate_instruction_llvm(
                 context.to_expression(ptr)
             ));
         }
-        Instruction::Destroy(_, _, _) => panic!("destroy instruction got to code gen"),
         Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
@@ -295,12 +302,6 @@ fn generate_instruction_llvm(
                 to_llvm_type(tuple_type),
                 context.to_expression(tuple),
             ));
-        }
-        Instruction::InsertValueDyn(_, _, _, _, _, _) => {
-            panic!("Dynamic insertvalue got to codegen")
-        }
-        Instruction::ExtractValueDyn(_, _, _, _, _) => {
-            panic!("Dynamic extractvalue got to codegen")
         }
         Instruction::GetElementPtr(type_, ptr, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
@@ -564,6 +565,7 @@ fn generate_instruction_llvm(
                 context.append("    ret void\n");
             }
         }
+        _ => panic!("{instruction:?} instruction got to code gen"),
     }
     Result::Ok(())
 }
@@ -653,6 +655,7 @@ pub fn generate_llvm(
     context.append("declare i32 @printf(ptr, ...)\n");
     context.append("declare ptr @gets_s(ptr, i64)\n");
     context.append("declare i32 @strcmp(ptr, ptr)\n");
+    context.append("declare ptr @memcpy(ptr, ptr, i64)\n");
     context.append("declare ptr @malloc(i64)\n");
     context.append("declare ptr @realloc(i64)\n");
     context.append("declare void @free(ptr)\n");

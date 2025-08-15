@@ -1,3 +1,4 @@
+use crate::ir::Arithemtic;
 use crate::lex::Lexer;
 use crate::lex::Location;
 
@@ -655,6 +656,137 @@ fn resolve_print(
     Result::Ok(())
 }
 
+fn resolve_clone(
+    value: Value,
+    type_: Type,
+    result_var: i64,
+    function: &mut Function,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<bool, String> {
+    match &type_ {
+        Type::Ptr(type_) => {
+            let size = match type_.as_ref() {
+                Type::Typ => {
+                    return Result::Err(
+                        lexer.make_error_report(location, "types can't be put into memory"),
+                    )
+                }
+                Type::TypVar(_) => panic!("this type var should be checked and resolved in caller"),
+                _ => type_.byte_size()?,
+            };
+
+            function.add_instruction(Instruction::Malloc(Value::IntLiteral(size), result_var));
+
+            // TODO: clone contents
+            function.add_instruction(Instruction::Memcopy(
+                value,
+                Value::Variable(result_var),
+                Value::IntLiteral(size),
+            ));
+
+            Result::Ok(true)
+        }
+        Type::Tuple(types) => {
+            let mut clonable = false;
+            for (i, element_type) in types.iter().enumerate() {
+                let element_var = function.new_var(element_type.clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    value.clone(),
+                    type_.clone(),
+                    element_type.clone(),
+                    i as i64,
+                    element_var,
+                ));
+
+                if resolve_clone(
+                    Value::Variable(element_var),
+                    element_type.clone(),
+                    result_var,
+                    function,
+                    lexer,
+                    location,
+                )? {
+                    clonable = true;
+                }
+            }
+            Result::Ok(clonable)
+        }
+        Type::Array(_, _) => todo!("clone array"),
+        Type::Slice(element_type) => {
+            let ptr_type = Type::Ptr(element_type.clone());
+            let ptr_var = function.new_var(ptr_type.clone());
+            function.add_instruction(Instruction::ExtractValue(
+                value.clone(),
+                slice_underlying_type(element_type.deref().clone()),
+                ptr_type.clone(),
+                0,
+                ptr_var,
+            ));
+
+            let element_size = match element_type.as_ref() {
+                Type::Typ => {
+                    return Result::Err(
+                        lexer.make_error_report(location, "types can't be put into memory"),
+                    )
+                }
+                Type::TypVar(_) => panic!("this type var should be checked and resolved in caller"),
+                _ => type_.byte_size()?,
+            };
+
+            let element_count_var = function.new_var(Type::Int);
+            function.add_instruction(Instruction::ExtractValue(
+                value.clone(),
+                slice_underlying_type(element_type.deref().clone()),
+                Type::Int,
+                1,
+                element_count_var,
+            ));
+
+            let allocation_size_var = function.new_var(Type::Int);
+            function.add_instruction(Instruction::Arithemtic(
+                Arithemtic::Mul,
+                Value::IntLiteral(element_size),
+                Value::Variable(element_count_var),
+                allocation_size_var,
+            ));
+
+            let new_ptr_var = function.new_var(ptr_type.clone());
+            function.add_instruction(Instruction::Malloc(
+                Value::Variable(allocation_size_var),
+                new_ptr_var,
+            ));
+
+            // TODO: clone slice contents
+            function.add_instruction(Instruction::Memcopy(
+                Value::Variable(ptr_var),
+                Value::Variable(new_ptr_var),
+                Value::Variable(allocation_size_var),
+            ));
+
+            function.add_instruction(Instruction::InsertValue(
+                value,
+                slice_underlying_type(element_type.deref().clone()),
+                Value::Variable(new_ptr_var),
+                ptr_type,
+                0,
+                result_var,
+            ));
+
+            Result::Ok(true)
+        }
+        Type::Vec(element_type) => resolve_clone(
+            value,
+            vec_underlying_type(element_type.deref().clone()),
+            result_var,
+            function,
+            lexer,
+            location,
+        ),
+        _ => Result::Ok(false),
+    }
+}
+
 fn resolve_destroy(value: Value, type_: Type, function: &mut Function) -> bool {
     match &type_ {
         Type::Ptr(_) => {
@@ -806,6 +938,12 @@ fn resolve_types_instruction(
                 value,
             ))
         }
+        Instruction::Memcopy(from, to, size) => {
+            let from = resolve_types_value(from, function, globals, lexer)?;
+            let to = resolve_types_value(to, function, globals, lexer)?;
+            let size = resolve_types_value(size, function, globals, lexer)?;
+            function.add_instruction(Instruction::Memcopy(from, to, size));
+        }
         Instruction::Malloc(size, result_var) => {
             let size = resolve_types_value(size, function, globals, lexer)?;
             function.add_instruction(Instruction::Malloc(size, result_var));
@@ -818,6 +956,24 @@ fn resolve_types_instruction(
         Instruction::Free(ptr) => {
             let ptr = resolve_types_value(ptr, function, globals, lexer)?;
             function.add_instruction(Instruction::Free(ptr));
+        }
+        Instruction::Clone(value, type_, result_var, location) => {
+            if !resolve_clone(
+                resolve_types_value(value, function, globals, lexer)?,
+                type_.clone(),
+                result_var,
+                function,
+                lexer,
+                location,
+            )? {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!(
+                        "value of type {} doesn't need to be destroyed",
+                        display_type(&type_, globals)
+                    ),
+                ));
+            }
         }
         Instruction::Destroy(value, type_, location) => {
             if !resolve_destroy(

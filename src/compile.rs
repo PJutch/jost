@@ -1377,6 +1377,14 @@ fn compile_block(
                 ));
             }
             Word::Id("free") => compile_free(function, globals, lexer, location)?,
+            Word::Id("clone") => {
+                let value = function.pop_of_any_type(globals, location, lexer)?;
+                let type_ = type_of(&value, function, globals);
+
+                let result_var = function.new_var(type_.clone());
+                function.add_instruction(Instruction::Clone(value, type_, result_var, location));
+                function.push(Value::Variable(result_var));
+            }
             Word::Id("destroy") => {
                 let value = function.pop_of_any_type(globals, location, lexer)?;
                 let type_ = type_of(&value, function, globals);
