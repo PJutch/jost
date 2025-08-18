@@ -1265,18 +1265,56 @@ pub fn merge_types(type1: &Type, type2: &Type, globals: &mut Globals) -> bool {
                 true
             }
         }
-        Type::FnPtr(arg_types1, result_types1) => {
-            if let Type::FnPtr(arg_types2, result_types2) = type2 {
-                let arg_types_match = merge_type_lists(arg_types1, arg_types2, globals);
-                let result_types_match = merge_type_lists(result_types1, result_types2, globals);
-                arg_types_match && result_types_match
-            } else {
-                false
+        Type::Ptr(element_type1) => match type2 {
+            Type::Ptr(element_type2) => {
+                merge_types(element_type1.as_ref(), element_type2.as_ref(), globals)
             }
-        }
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
+        Type::FnPtr(arg_types1, result_types1) => match type2 {
+            Type::FnPtr(arg_types2, result_types2) => {
+                merge_type_lists(arg_types1, arg_types2, globals)
+                    && merge_type_lists(result_types1, result_types2, globals)
+            }
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
+        Type::Tuple(types1) => match type2 {
+            Type::Tuple(types2) => merge_type_lists(types1, types2, globals),
+            Type::Array(element_type2, size) => {
+                types1.len() as i64 == *size
+                    && types1
+                        .iter()
+                        .all(|element_type1| merge_types(element_type1, element_type2, globals))
+            }
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
+        Type::Array(element_type1, size1) => match type2 {
+            Type::Array(element_type2, size2) => {
+                size1 == size2
+                    && merge_types(element_type1.as_ref(), element_type2.as_ref(), globals)
+            }
+            Type::Tuple(_) | &Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
+        Type::Slice(element_type1) => match type2 {
+            Type::Slice(element_type2) => {
+                merge_types(element_type1.as_ref(), element_type2.as_ref(), globals)
+            }
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
+        Type::Vec(element_type1) => match type2 {
+            Type::Vec(element_type2) => {
+                merge_types(element_type1.as_ref(), element_type2.as_ref(), globals)
+            }
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
         _ => match type2 {
             Type::TypVar(_) => merge_types(type2, type1, globals),
-            Type::FnPtr(_, _) => false,
             _ => type1 == type2,
         },
     }

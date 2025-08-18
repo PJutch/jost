@@ -1086,6 +1086,8 @@ fn compile_concat(
                         Value::Variable(condition_var),
                         body_scope,
                     ));
+
+                    return Result::Ok(());
                 }
             }
         }
@@ -1206,6 +1208,7 @@ fn compile_free(
 ) -> Result<(), String> {
     if let Some(ptr) = function.nth_from_top(0, globals) {
         if should_be_ptr(type_of(&ptr, function, globals), globals).is_some() {
+            function.pop(globals).expect("stack is checked above");
             function.add_instruction(Instruction::Free(ptr));
             return Result::Ok(());
         }

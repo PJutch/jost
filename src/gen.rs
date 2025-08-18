@@ -258,7 +258,7 @@ fn generate_instruction_llvm(
         Instruction::Memcopy(from, to, size) => {
             let var_number = context.next_var_number_anonymous();
             context.append(&format!(
-                "    %{var_number} = call ptr @memcpy(ptr {}, ptr {}, i64 {})",
+                "    %{var_number} = call ptr @memcpy(ptr {}, ptr {}, i64 {})\n",
                 context.to_expression(from),
                 context.to_expression(to),
                 context.to_expression(size)
