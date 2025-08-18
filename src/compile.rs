@@ -1172,6 +1172,32 @@ fn compile_to_slice(
     ))
 }
 
+fn compile_unpack(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(container) = function.nth_from_top(0, globals) {
+        if matches!(
+            type_of(&container, function, globals),
+            Type::Tuple(_) | Type::Array(_, _)
+        ) {
+            for value in compiletime_extract_all(container, function, globals) {
+                function.push(value);
+            }
+            return Result::Ok(());
+        }
+    }
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Iterbale, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_free(
     function: &mut Function,
     globals: &mut Globals,
@@ -1375,6 +1401,7 @@ fn compile_block(
                 compile_slice_from_parts(function, globals, lexer, location)?
             }
             Word::Id("to_slice") => compile_to_slice(function, globals, lexer, location)?,
+            Word::Id("unpack") => compile_unpack(function, globals, lexer, location)?,
             Word::Id("(") => {
                 let lambda = compile_function(lexer, globals, Vec::new(), Vec::new(), false)?;
                 function.push(Value::Global(globals.new_lambda(lambda)));
