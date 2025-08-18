@@ -181,10 +181,10 @@ impl<'a, 'b> Lexer<'a, 'b> {
         )
     }
 
-    pub fn consume_and_expect(&mut self, expected: &str) -> Result<(), String> {
+    pub fn consume_and_expect(&mut self, expected: &str) -> Result<Location, String> {
         if let Some((Word::Id(id), location)) = self.next_word() {
             if id == expected {
-                Result::Ok(())
+                Result::Ok(location)
             } else {
                 Result::Err(
                     self.make_error_report(location, &format!("expected {expected}, found {id}")),
@@ -224,5 +224,20 @@ impl<'a, 'b> Lexer<'a, 'b> {
                 "expected an id, got eof",
             ))
         }
+    }
+
+    pub fn consume_until_closing(&mut self) -> bool {
+        let mut depth = 1;
+        while let Some((word, _)) = self.next_word() {
+            if word == Word::Id("(") {
+                depth += 1;
+            } else if word == Word::Id(")") {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }

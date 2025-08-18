@@ -1185,10 +1185,46 @@ fn compile_unpack(
             type_of(&container, function, globals),
             Type::Tuple(_) | Type::Array(_, _)
         ) {
+            function.pop(globals).expect("stack is checked above");
             for value in compiletime_extract_all(container, function, globals) {
                 function.push(value);
             }
             return Result::Ok(());
+        }
+    }
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Iterbale, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_for(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(container) = function.nth_from_top(0, globals) {
+        if matches!(
+            type_of(&container, function, globals),
+            Type::Tuple(_) | Type::Array(_, _)
+        ) {
+            function.pop(globals).expect("stack is checked above");
+            let opening_braket_location = lexer.consume_and_expect("(")?;
+            let start_byte = lexer.current_byte;
+            for value in compiletime_extract_all(container, function, globals) {
+                function.push(value);
+                compile_block(lexer, function, globals, false)?;
+                lexer.current_byte = start_byte;
+            }
+            return if lexer.consume_until_closing() {
+                Result::Ok(())
+            } else {
+                Result::Err(lexer.make_error_report(opening_braket_location, "unclosed ("))
+            };
         }
     }
     Result::Err(lexer.make_error_report(
@@ -1422,6 +1458,7 @@ fn compile_block(
             Word::Id("if") => compile_if(lexer, function, globals, location)?,
             Word::Id("loop") => compile_loop(function, globals, lexer, location)?,
             Word::Id("while") => compile_while(function, globals, lexer, location)?,
+            Word::Id("for") => compile_for(function, globals, lexer, location)?,
             Word::Id("lambda") => {
                 lexer.consume_and_expect("(")?;
                 let (args, results) = function.pop_signature(globals, lexer, location)?;
