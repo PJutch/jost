@@ -1059,7 +1059,7 @@ fn compile_concat(
                     let new_counter_var = function.new_var(Type::Int);
                     function.add_instruction(Instruction::Arithemtic(
                         Arithemtic::Add,
-                        Value::Variable(condition_var),
+                        Value::Variable(counter_var),
                         Value::IntLiteral(1),
                         new_counter_var,
                     ));
