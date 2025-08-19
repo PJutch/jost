@@ -1236,6 +1236,291 @@ fn compile_for(
     ))
 }
 
+fn compile_forref(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(ref_container) = function.nth_from_top(0, globals) {
+        match type_of(&ref_container, function, globals) {
+            Type::Ptr(container_type) => match *container_type {
+                Type::Tuple(_) | Type::Array(_, _) => {
+                    function.pop(globals).expect("stack is checked above");
+                    let opening_braket_location = lexer.consume_and_expect("(")?;
+                    let start_byte = lexer.current_byte;
+                    for i in 0..container_type.compiletime_len() {
+                        let element_ptr_var =
+                            function.new_var(container_type.element_type(i).clone());
+                        function.add_instruction(Instruction::GetElementPtr(
+                            container_type.deref().clone(),
+                            ref_container.clone(),
+                            Value::IntLiteral(i),
+                            element_ptr_var,
+                        ));
+                        function.push(Value::Variable(element_ptr_var));
+
+                        compile_block(lexer, function, globals, false)?;
+                        lexer.current_byte = start_byte;
+                    }
+
+                    return if lexer.consume_until_closing() {
+                        Result::Ok(())
+                    } else {
+                        Result::Err(lexer.make_error_report(opening_braket_location, "unclosed ("))
+                    };
+                }
+                _ => {}
+            },
+            Type::Slice(element_type) => {
+                let ptr_type = Type::Ptr(element_type.clone());
+                let ptr_var = function.new_var(ptr_type.clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    ref_container.clone(),
+                    slice_underlying_type(element_type.deref().clone()),
+                    ptr_type,
+                    0,
+                    ptr_var,
+                ));
+
+                function.new_scope(true);
+                let counter_var = function.new_var(Type::Int);
+                let condition_var = function.new_var(Type::Bool);
+                function.add_instruction(Instruction::Relational(
+                    Relational::Lt,
+                    Value::Variable(counter_var),
+                    Value::Length(Box::from(ref_container.clone()), location),
+                    condition_var,
+                ));
+
+                function.new_scope(false);
+                let element_ptr_var = compile_slice_refat(
+                    ref_container,
+                    Value::Variable(counter_var),
+                    element_type.deref().clone(),
+                    function,
+                );
+                function.push(Value::Variable(element_ptr_var));
+
+                lexer.consume_and_expect("(")?;
+                compile_block(lexer, function, globals, false)?;
+
+                let new_counter_var = function.new_var(Type::Int);
+                function.add_instruction(Instruction::Arithemtic(
+                    Arithemtic::Add,
+                    Value::Variable(counter_var),
+                    Value::IntLiteral(1),
+                    new_counter_var,
+                ));
+
+                let body_scope = function.scopes.pop().expect("scope was created above");
+                let mut test_scope = function.scopes.pop().expect("scope was created above");
+
+                let n_borrowed =
+                    body_scope.n_borrowed + test_scope.n_borrowed - test_scope.stack.len() as i64;
+
+                let expected_types: Vec<Type> = (0..n_borrowed)
+                    .map(|i| type_of(&test_scope.borrowed_vars[&i].1, function, globals))
+                    .collect();
+
+                let actual_types: Vec<Type> = test_scope
+                    .stack
+                    .iter()
+                    .map(|value| type_of(value, function, globals))
+                    .collect();
+
+                if expected_types != actual_types {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "loop body consumed {}, but returned {}",
+                            display_type_list(&expected_types, globals),
+                            display_type_list(&actual_types, globals)
+                        ),
+                    ));
+                }
+
+                let mut phis = Vec::from([Phi {
+                    result_type: Type::Int,
+                    case1: Value::IntLiteral(0),
+                    case2: Value::Variable(new_counter_var),
+                    result_var: counter_var,
+                }]);
+
+                for (i, (var, value)) in mem::take(&mut test_scope.borrowed_vars) {
+                    let i = i as usize;
+                    phis.push(Phi {
+                        result_var: var,
+                        result_type: type_of(&value, function, globals),
+                        case1: value,
+                        case2: if i < body_scope.stack.len() {
+                            body_scope.stack[body_scope.stack.len() - i - 1].clone()
+                        } else if i < body_scope.stack.len() + test_scope.stack.len()
+                            - body_scope.n_borrowed as usize
+                        {
+                            test_scope.stack[test_scope.stack.len() + body_scope.stack.len()
+                                - body_scope.n_borrowed as usize
+                                - i
+                                - 1]
+                            .clone()
+                        } else {
+                            Value::Variable(var)
+                        },
+                    });
+                }
+
+                for _ in 0..n_borrowed {
+                    function.pop(globals);
+                }
+
+                for value in &test_scope.stack {
+                    function.push(value.clone());
+                }
+
+                function.add_instruction(Instruction::While(
+                    phis,
+                    test_scope,
+                    Value::Variable(condition_var),
+                    body_scope,
+                ));
+                return Result::Ok(());
+            }
+            Type::Vec(element_type) => {
+                let slice_type = Type::Slice(element_type.clone());
+                let slice_var = function.new_var(slice_type.clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    ref_container.clone(),
+                    vec_underlying_type(element_type.deref().clone()),
+                    slice_type,
+                    0,
+                    slice_var,
+                ));
+
+                let ptr_type = Type::Ptr(element_type.clone());
+                let ptr_var = function.new_var(ptr_type.clone());
+                function.add_instruction(Instruction::ExtractValue(
+                    Value::Variable(slice_var),
+                    slice_underlying_type(element_type.deref().clone()),
+                    ptr_type,
+                    0,
+                    ptr_var,
+                ));
+
+                function.new_scope(true);
+                let counter_var = function.new_var(Type::Int);
+                let condition_var = function.new_var(Type::Bool);
+                function.add_instruction(Instruction::Relational(
+                    Relational::Lt,
+                    Value::Variable(counter_var),
+                    Value::Length(Box::from(ref_container.clone()), location),
+                    condition_var,
+                ));
+
+                function.new_scope(false);
+                let element_ptr_var = compile_vec_refat(
+                    ref_container,
+                    Value::Variable(counter_var),
+                    element_type.deref().clone(),
+                    function,
+                );
+                function.push(Value::Variable(element_ptr_var));
+
+                lexer.consume_and_expect("(")?;
+                compile_block(lexer, function, globals, false)?;
+
+                let new_counter_var = function.new_var(Type::Int);
+                function.add_instruction(Instruction::Arithemtic(
+                    Arithemtic::Add,
+                    Value::Variable(counter_var),
+                    Value::IntLiteral(1),
+                    new_counter_var,
+                ));
+
+                let body_scope = function.scopes.pop().expect("scope was created above");
+                let mut test_scope = function.scopes.pop().expect("scope was created above");
+
+                let n_borrowed =
+                    body_scope.n_borrowed + test_scope.n_borrowed - test_scope.stack.len() as i64;
+
+                let expected_types: Vec<Type> = (0..n_borrowed)
+                    .map(|i| type_of(&test_scope.borrowed_vars[&i].1, function, globals))
+                    .collect();
+
+                let actual_types: Vec<Type> = test_scope
+                    .stack
+                    .iter()
+                    .map(|value| type_of(value, function, globals))
+                    .collect();
+
+                if expected_types != actual_types {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "loop body consumed {}, but returned {}",
+                            display_type_list(&expected_types, globals),
+                            display_type_list(&actual_types, globals)
+                        ),
+                    ));
+                }
+
+                let mut phis = Vec::from([Phi {
+                    result_type: Type::Int,
+                    case1: Value::IntLiteral(0),
+                    case2: Value::Variable(new_counter_var),
+                    result_var: counter_var,
+                }]);
+
+                for (i, (var, value)) in mem::take(&mut test_scope.borrowed_vars) {
+                    let i = i as usize;
+                    phis.push(Phi {
+                        result_var: var,
+                        result_type: type_of(&value, function, globals),
+                        case1: value,
+                        case2: if i < body_scope.stack.len() {
+                            body_scope.stack[body_scope.stack.len() - i - 1].clone()
+                        } else if i < body_scope.stack.len() + test_scope.stack.len()
+                            - body_scope.n_borrowed as usize
+                        {
+                            test_scope.stack[test_scope.stack.len() + body_scope.stack.len()
+                                - body_scope.n_borrowed as usize
+                                - i
+                                - 1]
+                            .clone()
+                        } else {
+                            Value::Variable(var)
+                        },
+                    });
+                }
+
+                for _ in 0..n_borrowed {
+                    function.pop(globals);
+                }
+
+                for value in &test_scope.stack {
+                    function.push(value.clone());
+                }
+
+                function.add_instruction(Instruction::While(
+                    phis,
+                    test_scope,
+                    Value::Variable(condition_var),
+                    body_scope,
+                ));
+                return Result::Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Iterable, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_free(
     function: &mut Function,
     globals: &mut Globals,
@@ -1459,6 +1744,7 @@ fn compile_block(
             Word::Id("loop") => compile_loop(function, globals, lexer, location)?,
             Word::Id("while") => compile_while(function, globals, lexer, location)?,
             Word::Id("for") => compile_for(function, globals, lexer, location)?,
+            Word::Id("forref") => compile_forref(function, globals, lexer, location)?,
             Word::Id("lambda") => {
                 lexer.consume_and_expect("(")?;
                 let (args, results) = function.pop_signature(globals, lexer, location)?;
