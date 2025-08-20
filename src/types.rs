@@ -1,7 +1,8 @@
-use crate::ir::Arithemtic;
+use crate::compile::compile_arithmetic;
 use crate::lex::Lexer;
 use crate::lex::Location;
 
+use crate::ir::Arithemtic;
 use crate::ir::Function;
 use crate::ir::Globals;
 use crate::ir::Instruction;
@@ -9,6 +10,8 @@ use crate::ir::Phi;
 use crate::ir::Relational;
 use crate::ir::Scope;
 use crate::ir::Value;
+
+use crate::compile::compile_slice_get_ptr;
 
 use std::collections::HashMap;
 
@@ -661,21 +664,10 @@ fn resolve_clone(
     type_: Type,
     result_var: i64,
     function: &mut Function,
-    lexer: &Lexer,
-    location: Location,
 ) -> Result<bool, String> {
     match &type_ {
         Type::Ptr(type_) => {
-            let size = match type_.as_ref() {
-                Type::Typ => {
-                    return Result::Err(
-                        lexer.make_error_report(location, "types can't be put into memory"),
-                    )
-                }
-                Type::TypVar(_) => panic!("this type var should be checked and resolved in caller"),
-                _ => type_.byte_size()?,
-            };
-
+            let size = type_.byte_size()?;
             function.add_instruction(Instruction::Malloc(Value::IntLiteral(size), result_var));
 
             // TODO: clone contents
@@ -704,8 +696,6 @@ fn resolve_clone(
                     element_type.clone(),
                     result_var,
                     function,
-                    lexer,
-                    location,
                 )? {
                     clonable = true;
                 }
@@ -714,25 +704,10 @@ fn resolve_clone(
         }
         Type::Array(_, _) => todo!("clone array"),
         Type::Slice(element_type) => {
-            let ptr_type = Type::Ptr(element_type.clone());
-            let ptr_var = function.new_var(ptr_type.clone());
-            function.add_instruction(Instruction::ExtractValue(
-                value.clone(),
-                slice_underlying_type(element_type.deref().clone()),
-                ptr_type.clone(),
-                0,
-                ptr_var,
-            ));
+            let (ptr_var, ptr_type) =
+                compile_slice_get_ptr(value.clone(), element_type.deref().clone(), function);
 
-            let element_size = match element_type.as_ref() {
-                Type::Typ => {
-                    return Result::Err(
-                        lexer.make_error_report(location, "types can't be put into memory"),
-                    )
-                }
-                Type::TypVar(_) => panic!("this type var should be checked and resolved in caller"),
-                _ => type_.byte_size()?,
-            };
+            let element_size = element_type.byte_size()?;
 
             let element_count_var = function.new_var(Type::Int);
             function.add_instruction(Instruction::ExtractValue(
@@ -743,13 +718,12 @@ fn resolve_clone(
                 element_count_var,
             ));
 
-            let allocation_size_var = function.new_var(Type::Int);
-            function.add_instruction(Instruction::Arithemtic(
+            let allocation_size_var = compile_arithmetic(
                 Arithemtic::Mul,
                 Value::IntLiteral(element_size),
                 Value::Variable(element_count_var),
-                allocation_size_var,
-            ));
+                function,
+            );
 
             let new_ptr_var = function.new_var(ptr_type.clone());
             function.add_instruction(Instruction::Malloc(
@@ -780,8 +754,6 @@ fn resolve_clone(
             vec_underlying_type(element_type.deref().clone()),
             result_var,
             function,
-            lexer,
-            location,
         ),
         _ => Result::Ok(false),
     }
@@ -963,8 +935,6 @@ fn resolve_types_instruction(
                 type_.clone(),
                 result_var,
                 function,
-                lexer,
-                location,
             )? {
                 return Result::Err(lexer.make_error_report(
                     location,

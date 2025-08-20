@@ -216,6 +216,12 @@ impl Function {
         self.scopes.push(Scope::new(create_borrowed_vars));
     }
 
+    pub fn pop_scope(&mut self) -> Scope {
+        self.scopes
+            .pop()
+            .expect("pop_scope excpects a scope to exist")
+    }
+
     pub fn get_single_scope(&self) -> &Scope {
         if self.scopes.len() > 1 {
             panic!(

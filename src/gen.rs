@@ -259,8 +259,8 @@ fn generate_instruction_llvm(
             let var_number = context.next_var_number_anonymous();
             context.append(&format!(
                 "    %{var_number} = call ptr @memcpy(ptr {}, ptr {}, i64 {})\n",
-                context.to_expression(from),
                 context.to_expression(to),
+                context.to_expression(from),
                 context.to_expression(size)
             ));
         }
@@ -657,7 +657,7 @@ pub fn generate_llvm(
     context.append("declare i32 @strcmp(ptr, ptr)\n");
     context.append("declare ptr @memcpy(ptr, ptr, i64)\n");
     context.append("declare ptr @malloc(i64)\n");
-    context.append("declare ptr @realloc(i64)\n");
+    context.append("declare ptr @realloc(i64, ptr)\n");
     context.append("declare void @free(ptr)\n");
 
     context.append("@__string_buf = global [256 x i8] zeroinitializer, align 1\n");

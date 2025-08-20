@@ -39,8 +39,10 @@ fn arithmetic_from_id(id: &str) -> Option<Arithemtic> {
     }
 }
 
-fn is_arithmetic_op(id: &str) -> bool {
-    arithmetic_from_id(id).is_some()
+pub fn compile_arithmetic(op: Arithemtic, lhs: Value, rhs: Value, function: &mut Function) -> i64 {
+    let result_var = function.new_var(Type::Int);
+    function.add_instruction(Instruction::Arithemtic(op, lhs, rhs, result_var));
+    result_var
 }
 
 fn relational_from_id(id: &str) -> Option<Relational> {
@@ -55,8 +57,10 @@ fn relational_from_id(id: &str) -> Option<Relational> {
     }
 }
 
-fn is_relational_op(id: &str) -> bool {
-    relational_from_id(id).is_some()
+fn compile_relational(op: Relational, lhs: Value, rhs: Value, function: &mut Function) -> i64 {
+    let result_var = function.new_var(Type::Bool);
+    function.add_instruction(Instruction::Relational(op, lhs, rhs, result_var));
+    result_var
 }
 
 fn logical_from_id(id: &str) -> Option<Logical> {
@@ -67,8 +71,10 @@ fn logical_from_id(id: &str) -> Option<Logical> {
     }
 }
 
-fn is_logical_op(id: &str) -> bool {
-    logical_from_id(id).is_some()
+fn compile_logical(op: Logical, lhs: Value, rhs: Value, function: &mut Function) -> i64 {
+    let result_var = function.new_var(Type::Bool);
+    function.add_instruction(Instruction::Logical(op, lhs, rhs, result_var));
+    result_var
 }
 
 fn compile_call(
@@ -173,12 +179,7 @@ fn compile_normal_block(
     lexer.consume_and_expect("(")?;
     compile_block(lexer, function, globals, false)?;
 
-    Result::Ok(
-        function
-            .scopes
-            .pop()
-            .expect("compile_if already created a then scope"),
-    )
+    Result::Ok(function.pop_scope())
 }
 
 fn compile_if(
@@ -278,10 +279,7 @@ fn compile_loop(
     lexer: &mut Lexer,
     location: Location,
 ) -> Result<(), String> {
-    function.new_scope(true);
-    lexer.consume_and_expect("(")?;
-    compile_block(lexer, function, globals, false)?;
-    let mut body_scope = function.scopes.pop().expect("scope was created above");
+    let mut body_scope = compile_normal_block(true, lexer, function, globals)?;
 
     if body_scope.no_return {
         return Result::Err(lexer.make_error_report(location, "loop body shouldn't be noreturn"));
@@ -364,19 +362,24 @@ fn compile_while(
         .map(|i| type_of(&test_scope.borrowed_vars[&i].1, function, globals))
         .collect();
 
-    let actual_types: Vec<Type> = test_scope
-        .stack
+    let mut returned_values = test_scope.stack.clone();
+    for _ in 0..body_scope.n_borrowed {
+        returned_values.pop();
+    }
+    returned_values.append(&mut body_scope.stack.clone());
+
+    let returned_types: Vec<Type> = returned_values
         .iter()
         .map(|value| type_of(value, function, globals))
         .collect();
 
-    if expected_types != actual_types {
+    if expected_types != returned_types {
         return Result::Err(lexer.make_error_report(
             location,
             &format!(
                 "loop body consumed {}, but returned {}",
                 display_type_list(&expected_types, globals),
-                display_type_list(&actual_types, globals)
+                display_type_list(&returned_types, globals)
             ),
         ));
     }
@@ -531,30 +534,22 @@ fn compile_append(
 ) -> Result<(), String> {
     if let Some(value) = function.nth_from_top(0, globals) {
         if let Some(container) = function.nth_from_top(1, globals) {
+            function.pop(globals).expect("stack is checked above");
+            function.pop(globals).expect("stack is checked above");
+
             match type_of(&container, function, globals) {
                 Type::Tuple(mut types) => {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
-
                     let mut values = compiletime_extract_all(container, function, globals);
                     types.push(type_of(&value, function, globals));
                     values.push(value);
 
                     function.push(Value::Tuple(values, types));
-                    return Result::Ok(());
                 }
                 Type::Array(_, 0) => {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
-
                     let value_type = type_of(&value, function, globals);
                     function.push(Value::Array(Vec::from([value]), value_type));
-                    return Result::Ok(());
                 }
                 Type::Array(type_, _) => {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
-
                     let value_type = type_of(&value, function, globals);
 
                     let mut values = compiletime_extract_all(container, function, globals);
@@ -569,17 +564,25 @@ fn compile_append(
                             .collect();
                         function.push(Value::Tuple(values, types));
                     }
-                    return Result::Ok(());
                 }
-                _ => {}
+                other_type => {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "{} isn't a Tuple or an Array",
+                            display_type(&other_type, globals)
+                        ),
+                    ))
+                }
             }
+            return Result::Ok(());
         }
     }
 
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected ... ... Tuple Value, found {}",
+            "expected ... ... Tuple or Array Value, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -594,10 +597,9 @@ fn compile_at(
     if let Some(container) = function.nth_from_top(1, globals) {
         let container_type = type_of(&container, function, globals);
         if let Some(index) = function.nth_from_top(0, globals) {
+            function.pop(globals).expect("stack is checked above");
+            function.pop(globals).expect("stack is checked above");
             if let Value::IntLiteral(index) = index {
-                function.pop(globals).expect("stack is checked above");
-                function.pop(globals).expect("stack is checked above");
-
                 let element_type =
                     container_type.index_type_statically(index, globals, lexer, location)?;
 
@@ -610,11 +612,7 @@ fn compile_at(
                     index,
                     result_var,
                 ));
-                return Result::Ok(());
             } else {
-                function.pop(globals).expect("stack is checked above");
-                function.pop(globals).expect("stack is checked above");
-
                 let element_type =
                     container_type.index_type_dinamically(globals, lexer, location)?;
 
@@ -627,8 +625,8 @@ fn compile_at(
                     index,
                     result_var,
                 ));
-                return Result::Ok(());
             }
+            return Result::Ok(());
         }
     }
 
@@ -650,16 +648,16 @@ fn compile_set_at(
     if let Some(container) = function.nth_from_top(2, globals) {
         let container_type = type_of(&container, function, globals);
         if let Some(value) = function.nth_from_top(1, globals) {
+            let value_type = type_of(&value, function, globals);
             if let Some(index) = function.nth_from_top(0, globals) {
-                let value_type = type_of(&value, function, globals);
+                function.pop(globals).expect("stack is checked above");
+                function.pop(globals).expect("stack is checked above");
+                function.pop(globals).expect("stack is checked above");
+
                 if let Value::IntLiteral(index) = index {
                     let element_type =
                         container_type.index_type_statically(index, globals, lexer, location)?;
                     if merge_types(&value_type, element_type, globals) {
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-
                         let result_var = function.new_var(container_type.clone());
                         function.push(Value::Variable(result_var));
                         function.add_instruction(Instruction::InsertValue(
@@ -670,7 +668,6 @@ fn compile_set_at(
                             index,
                             result_var,
                         ));
-                        return Result::Ok(());
                     } else {
                         return Result::Err(lexer.make_error_report(
                             location,
@@ -685,10 +682,6 @@ fn compile_set_at(
                     let element_type =
                         container_type.index_type_dinamically(globals, lexer, location)?;
                     if merge_types(&value_type, element_type, globals) {
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-                        function.pop(globals).expect("stack is checked above");
-
                         let result_var = function.new_var(container_type.clone());
                         function.push(Value::Variable(result_var));
                         function.add_instruction(Instruction::InsertValueDyn(
@@ -699,7 +692,6 @@ fn compile_set_at(
                             index,
                             result_var,
                         ));
-                        return Result::Ok(());
                     } else {
                         return Result::Err(lexer.make_error_report(
                             location,
@@ -711,6 +703,7 @@ fn compile_set_at(
                         ));
                     }
                 }
+                return Result::Ok(());
             }
         }
     }
@@ -724,23 +717,30 @@ fn compile_set_at(
     ))
 }
 
+pub fn compile_slice_get_ptr(
+    slice: Value,
+    element_type: Type,
+    function: &mut Function,
+) -> (i64, Type) {
+    let ptr_type = Type::Ptr(Box::from(element_type.clone()));
+    let ptr_var = function.new_var(ptr_type.clone());
+    function.add_instruction(Instruction::ExtractValue(
+        slice,
+        slice_underlying_type(element_type),
+        ptr_type.clone(),
+        0,
+        ptr_var,
+    ));
+    (ptr_var, ptr_type)
+}
+
 fn compile_slice_refat(
     slice: Value,
     index: Value,
     element_type: Type,
     function: &mut Function,
 ) -> i64 {
-    let ptr_type = Type::Ptr(Box::from(element_type.clone()));
-
-    let ptr_var = function.new_var(ptr_type.clone());
-    function.add_instruction(Instruction::ExtractValue(
-        slice,
-        slice_underlying_type(element_type.clone()),
-        ptr_type.clone(),
-        0,
-        ptr_var,
-    ));
-
+    let (ptr_var, ptr_type) = compile_slice_get_ptr(slice, element_type.clone(), function);
     let result_var = function.new_var(ptr_type);
     function.add_instruction(Instruction::GetNeighbourPtr(
         element_type,
@@ -748,22 +748,24 @@ fn compile_slice_refat(
         index,
         result_var,
     ));
-
     result_var
 }
 
-fn compile_vec_refat(vec: Value, index: Value, element_type: Type, function: &mut Function) -> i64 {
+fn compile_vec_to_slice(vec: Value, element_type: Type, function: &mut Function) -> (i64, Type) {
     let slice_type = Type::Slice(Box::from(element_type.clone()));
-
     let slice_var = function.new_var(slice_type.clone());
     function.add_instruction(Instruction::ExtractValue(
         vec,
-        vec_underlying_type(element_type.clone()),
+        vec_underlying_type(element_type),
         slice_type.clone(),
         0,
         slice_var,
     ));
+    (slice_var, slice_type)
+}
 
+fn compile_vec_refat(vec: Value, index: Value, element_type: Type, function: &mut Function) -> i64 {
+    let (slice_var, _) = compile_vec_to_slice(vec, element_type.clone(), function);
     compile_slice_refat(Value::Variable(slice_var), index, element_type, function)
 }
 
@@ -793,7 +795,6 @@ fn compile_refat(
                             Value::IntLiteral(index),
                             result_var,
                         ));
-                        return Result::Ok(());
                     } else {
                         let element_type =
                             container_type.index_type_dinamically(globals, lexer, location)?;
@@ -807,8 +808,8 @@ fn compile_refat(
                             index,
                             result_var,
                         ));
-                        return Result::Ok(());
                     }
+                    return Result::Ok(());
                 }
                 Type::Slice(element_type) => {
                     let result_var = compile_slice_refat(container, index, *element_type, function);
@@ -842,54 +843,31 @@ fn compile_vec_append_impl(
     function: &mut Function,
     location: Location,
 ) -> i64 {
-    let slice_type = Type::Slice(Box::from(value_type.clone()));
-    let slice_var = function.new_var(slice_type.clone());
-    function.add_instruction(Instruction::ExtractValue(
-        vec.clone(),
-        vec_underlying_type(value_type.clone()),
-        slice_type.clone(),
-        0,
-        slice_var,
-    ));
+    let (slice_var, slice_type) = compile_vec_to_slice(vec.clone(), value_type.clone(), function);
 
     let capacity = Value::Length(Box::from(Value::Variable(slice_var)), location);
     let size = Value::Length(Box::from(vec.clone()), location);
 
-    let condition_var = function.new_var(Type::Bool);
-    function.add_instruction(Instruction::Relational(
-        Relational::Eq,
-        capacity.clone(),
-        size.clone(),
-        condition_var,
-    ));
+    let condition_var =
+        compile_relational(Relational::Eq, capacity.clone(), size.clone(), function);
 
     function.new_scope(false);
 
-    let ptr_type = Type::Slice(Box::from(value_type.clone()));
-    let ptr_var = function.new_var(ptr_type.clone());
-    function.add_instruction(Instruction::ExtractValue(
-        Value::Variable(slice_var),
-        slice_underlying_type(value_type.clone()),
-        ptr_type.clone(),
-        0,
-        ptr_var,
-    ));
+    let (ptr_var, ptr_type) =
+        compile_slice_get_ptr(Value::Variable(slice_var), value_type.clone(), function);
 
-    let new_capacity_var = function.new_var(Type::Int);
-    function.add_instruction(Instruction::Arithemtic(
+    let new_capacity_var = compile_arithmetic(
         Arithemtic::Mul,
-        capacity,
+        capacity.clone(),
         Value::IntLiteral(2),
-        new_capacity_var,
-    ));
-
-    let new_byte_capacity_var = function.new_var(Type::Int);
-    function.add_instruction(Instruction::Arithemtic(
+        function,
+    );
+    let new_byte_capacity_var = compile_arithmetic(
         Arithemtic::Mul,
         Value::Variable(new_capacity_var),
         Value::SizeOf(value_type.clone()),
-        new_byte_capacity_var,
-    ));
+        function,
+    );
 
     let new_ptr_var = function.new_var(ptr_type.clone());
     function.add_instruction(Instruction::Realloc(
@@ -942,13 +920,7 @@ fn compile_vec_append_impl(
         value,
     ));
 
-    let new_size_var = function.new_var(Type::Int);
-    function.add_instruction(Instruction::Arithemtic(
-        Arithemtic::Add,
-        size,
-        Value::IntLiteral(1),
-        new_size_var,
-    ));
+    let new_size_var = compile_arithmetic(Arithemtic::Add, size, Value::IntLiteral(1), function);
 
     let result_var = function.new_var(vec_type.clone());
     function.add_instruction(Instruction::InsertValue(
@@ -1023,13 +995,12 @@ fn compile_concat(
                     let counter_var = function.new_var(Type::Int);
 
                     function.new_scope(true);
-                    let condition_var = function.new_var(Type::Bool);
-                    function.add_instruction(Instruction::Relational(
+                    let condition_var = compile_relational(
                         Relational::Eq,
                         Value::Variable(counter_var),
                         Value::Length(Box::from(append_from.clone()), location),
-                        condition_var,
-                    ));
+                        function,
+                    );
 
                     function.new_scope(false);
 
@@ -1056,13 +1027,12 @@ fn compile_concat(
                         location,
                     );
 
-                    let new_counter_var = function.new_var(Type::Int);
-                    function.add_instruction(Instruction::Arithemtic(
+                    let new_counter_var = compile_arithmetic(
                         Arithemtic::Add,
                         Value::Variable(counter_var),
                         Value::IntLiteral(1),
-                        new_counter_var,
-                    ));
+                        function,
+                    );
 
                     let body_scope = function.scopes.pop().expect("scope was created above");
                     let test_scope = function.scopes.pop().expect("scope was created above");
@@ -1236,6 +1206,102 @@ fn compile_for(
     ))
 }
 
+fn compile_slice_forref<F: Fn(&mut Function, &mut Globals, &mut Lexer) -> Result<(), String>>(
+    slice: Value,
+    len: Value,
+    element_type: Type,
+    compile_body: F,
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    location: Location,
+) -> Result<(), String> {
+    function.new_scope(false);
+    let counter_var = function.new_var(Type::Int);
+    let condition_var =
+        compile_relational(Relational::Lt, Value::Variable(counter_var), len, function);
+    let test_scope = function.scopes.pop().expect("scope was created above");
+
+    function.new_scope(true);
+
+    let element_ptr_var = compile_slice_refat(
+        slice,
+        Value::Variable(counter_var),
+        element_type.clone(),
+        function,
+    );
+    function.push(Value::Variable(element_ptr_var));
+
+    compile_body(function, globals, lexer)?;
+
+    let new_counter_var = compile_arithmetic(
+        Arithemtic::Add,
+        Value::Variable(counter_var),
+        Value::IntLiteral(1),
+        function,
+    );
+
+    let mut body_scope = function.scopes.pop().expect("scope was created above");
+
+    let expected_types: Vec<Type> = (0..body_scope.n_borrowed)
+        .map(|i| type_of(&body_scope.borrowed_vars[&i].1, function, globals))
+        .collect();
+
+    let actual_types: Vec<Type> = body_scope
+        .stack
+        .iter()
+        .map(|value| type_of(value, function, globals))
+        .collect();
+
+    if expected_types != actual_types {
+        return Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "loop body consumed {}, but returned {}",
+                display_type_list(&expected_types, globals),
+                display_type_list(&actual_types, globals)
+            ),
+        ));
+    }
+
+    let mut phis = Vec::from([Phi {
+        result_type: Type::Int,
+        case1: Value::IntLiteral(0),
+        case2: Value::Variable(new_counter_var),
+        result_var: counter_var,
+    }]);
+
+    for (i, (var, value)) in mem::take(&mut body_scope.borrowed_vars) {
+        let i = i as usize;
+        phis.push(Phi {
+            result_var: var,
+            result_type: type_of(&value, function, globals),
+            case1: value,
+            case2: if i < body_scope.stack.len() {
+                body_scope.stack[body_scope.stack.len() - i - 1].clone()
+            } else {
+                Value::Variable(var)
+            },
+        });
+    }
+
+    for _ in 0..body_scope.n_borrowed {
+        function.pop(globals);
+    }
+
+    for value in &test_scope.stack {
+        function.push(value.clone());
+    }
+
+    function.add_instruction(Instruction::While(
+        phis,
+        test_scope,
+        Value::Variable(condition_var),
+        body_scope,
+    ));
+    Result::Ok(())
+}
+
 fn compile_forref(
     function: &mut Function,
     globals: &mut Globals,
@@ -1264,261 +1330,72 @@ fn compile_forref(
                         lexer.current_byte = start_byte;
                     }
 
-                    return if lexer.consume_until_closing() {
-                        Result::Ok(())
-                    } else {
-                        Result::Err(lexer.make_error_report(opening_braket_location, "unclosed ("))
-                    };
+                    if !lexer.consume_until_closing() {
+                        return Result::Err(
+                            lexer.make_error_report(opening_braket_location, "unclosed ("),
+                        );
+                    }
                 }
                 _ => {}
             },
-            Type::Slice(element_type) => {
-                let ptr_type = Type::Ptr(element_type.clone());
-                let ptr_var = function.new_var(ptr_type.clone());
-                function.add_instruction(Instruction::ExtractValue(
-                    ref_container.clone(),
-                    slice_underlying_type(element_type.deref().clone()),
-                    ptr_type,
-                    0,
-                    ptr_var,
-                ));
-
-                function.new_scope(true);
-                let counter_var = function.new_var(Type::Int);
-                let condition_var = function.new_var(Type::Bool);
-                function.add_instruction(Instruction::Relational(
-                    Relational::Lt,
-                    Value::Variable(counter_var),
-                    Value::Length(Box::from(ref_container.clone()), location),
-                    condition_var,
-                ));
-
-                function.new_scope(false);
-                let element_ptr_var = compile_slice_refat(
-                    ref_container,
-                    Value::Variable(counter_var),
-                    element_type.deref().clone(),
-                    function,
-                );
-                function.push(Value::Variable(element_ptr_var));
-
-                lexer.consume_and_expect("(")?;
-                compile_block(lexer, function, globals, false)?;
-
-                let new_counter_var = function.new_var(Type::Int);
-                function.add_instruction(Instruction::Arithemtic(
-                    Arithemtic::Add,
-                    Value::Variable(counter_var),
-                    Value::IntLiteral(1),
-                    new_counter_var,
-                ));
-
-                let body_scope = function.scopes.pop().expect("scope was created above");
-                let mut test_scope = function.scopes.pop().expect("scope was created above");
-
-                let n_borrowed =
-                    body_scope.n_borrowed + test_scope.n_borrowed - test_scope.stack.len() as i64;
-
-                let expected_types: Vec<Type> = (0..n_borrowed)
-                    .map(|i| type_of(&test_scope.borrowed_vars[&i].1, function, globals))
-                    .collect();
-
-                let actual_types: Vec<Type> = test_scope
-                    .stack
-                    .iter()
-                    .map(|value| type_of(value, function, globals))
-                    .collect();
-
-                if expected_types != actual_types {
-                    return Result::Err(lexer.make_error_report(
-                        location,
-                        &format!(
-                            "loop body consumed {}, but returned {}",
-                            display_type_list(&expected_types, globals),
-                            display_type_list(&actual_types, globals)
-                        ),
-                    ));
-                }
-
-                let mut phis = Vec::from([Phi {
-                    result_type: Type::Int,
-                    case1: Value::IntLiteral(0),
-                    case2: Value::Variable(new_counter_var),
-                    result_var: counter_var,
-                }]);
-
-                for (i, (var, value)) in mem::take(&mut test_scope.borrowed_vars) {
-                    let i = i as usize;
-                    phis.push(Phi {
-                        result_var: var,
-                        result_type: type_of(&value, function, globals),
-                        case1: value,
-                        case2: if i < body_scope.stack.len() {
-                            body_scope.stack[body_scope.stack.len() - i - 1].clone()
-                        } else if i < body_scope.stack.len() + test_scope.stack.len()
-                            - body_scope.n_borrowed as usize
-                        {
-                            test_scope.stack[test_scope.stack.len() + body_scope.stack.len()
-                                - body_scope.n_borrowed as usize
-                                - i
-                                - 1]
-                            .clone()
-                        } else {
-                            Value::Variable(var)
-                        },
-                    });
-                }
-
-                for _ in 0..n_borrowed {
-                    function.pop(globals);
-                }
-
-                for value in &test_scope.stack {
-                    function.push(value.clone());
-                }
-
-                function.add_instruction(Instruction::While(
-                    phis,
-                    test_scope,
-                    Value::Variable(condition_var),
-                    body_scope,
-                ));
-                return Result::Ok(());
-            }
+            Type::Slice(element_type) => compile_slice_forref(
+                ref_container.clone(),
+                Value::Length(Box::from(ref_container), location),
+                *element_type,
+                |function: &mut Function,
+                 globals: &mut Globals,
+                 lexer: &mut Lexer<'_, '_>|
+                 -> Result<(), String> {
+                    lexer.consume_and_expect("(")?;
+                    compile_block(lexer, function, globals, false)?;
+                    Result::Ok(())
+                },
+                function,
+                globals,
+                lexer,
+                location,
+            )?,
             Type::Vec(element_type) => {
-                let slice_type = Type::Slice(element_type.clone());
-                let slice_var = function.new_var(slice_type.clone());
-                function.add_instruction(Instruction::ExtractValue(
+                let (slice_var, _) = compile_vec_to_slice(
                     ref_container.clone(),
-                    vec_underlying_type(element_type.deref().clone()),
-                    slice_type,
-                    0,
-                    slice_var,
-                ));
-
-                let ptr_type = Type::Ptr(element_type.clone());
-                let ptr_var = function.new_var(ptr_type.clone());
-                function.add_instruction(Instruction::ExtractValue(
-                    Value::Variable(slice_var),
-                    slice_underlying_type(element_type.deref().clone()),
-                    ptr_type,
-                    0,
-                    ptr_var,
-                ));
-
-                function.new_scope(true);
-                let counter_var = function.new_var(Type::Int);
-                let condition_var = function.new_var(Type::Bool);
-                function.add_instruction(Instruction::Relational(
-                    Relational::Lt,
-                    Value::Variable(counter_var),
-                    Value::Length(Box::from(ref_container.clone()), location),
-                    condition_var,
-                ));
-
-                function.new_scope(false);
-                let element_ptr_var = compile_vec_refat(
-                    ref_container,
-                    Value::Variable(counter_var),
                     element_type.deref().clone(),
                     function,
                 );
-                function.push(Value::Variable(element_ptr_var));
-
-                lexer.consume_and_expect("(")?;
-                compile_block(lexer, function, globals, false)?;
-
-                let new_counter_var = function.new_var(Type::Int);
-                function.add_instruction(Instruction::Arithemtic(
-                    Arithemtic::Add,
-                    Value::Variable(counter_var),
-                    Value::IntLiteral(1),
-                    new_counter_var,
-                ));
-
-                let body_scope = function.scopes.pop().expect("scope was created above");
-                let mut test_scope = function.scopes.pop().expect("scope was created above");
-
-                let n_borrowed =
-                    body_scope.n_borrowed + test_scope.n_borrowed - test_scope.stack.len() as i64;
-
-                let expected_types: Vec<Type> = (0..n_borrowed)
-                    .map(|i| type_of(&test_scope.borrowed_vars[&i].1, function, globals))
-                    .collect();
-
-                let actual_types: Vec<Type> = test_scope
-                    .stack
-                    .iter()
-                    .map(|value| type_of(value, function, globals))
-                    .collect();
-
-                if expected_types != actual_types {
-                    return Result::Err(lexer.make_error_report(
-                        location,
-                        &format!(
-                            "loop body consumed {}, but returned {}",
-                            display_type_list(&expected_types, globals),
-                            display_type_list(&actual_types, globals)
-                        ),
-                    ));
-                }
-
-                let mut phis = Vec::from([Phi {
-                    result_type: Type::Int,
-                    case1: Value::IntLiteral(0),
-                    case2: Value::Variable(new_counter_var),
-                    result_var: counter_var,
-                }]);
-
-                for (i, (var, value)) in mem::take(&mut test_scope.borrowed_vars) {
-                    let i = i as usize;
-                    phis.push(Phi {
-                        result_var: var,
-                        result_type: type_of(&value, function, globals),
-                        case1: value,
-                        case2: if i < body_scope.stack.len() {
-                            body_scope.stack[body_scope.stack.len() - i - 1].clone()
-                        } else if i < body_scope.stack.len() + test_scope.stack.len()
-                            - body_scope.n_borrowed as usize
-                        {
-                            test_scope.stack[test_scope.stack.len() + body_scope.stack.len()
-                                - body_scope.n_borrowed as usize
-                                - i
-                                - 1]
-                            .clone()
-                        } else {
-                            Value::Variable(var)
-                        },
-                    });
-                }
-
-                for _ in 0..n_borrowed {
-                    function.pop(globals);
-                }
-
-                for value in &test_scope.stack {
-                    function.push(value.clone());
-                }
-
-                function.add_instruction(Instruction::While(
-                    phis,
-                    test_scope,
-                    Value::Variable(condition_var),
-                    body_scope,
-                ));
-                return Result::Ok(());
+                compile_slice_forref(
+                    Value::Variable(slice_var),
+                    Value::Length(Box::from(ref_container), location),
+                    *element_type,
+                    |function: &mut Function,
+                     globals: &mut Globals,
+                     lexer: &mut Lexer<'_, '_>|
+                     -> Result<(), String> {
+                        lexer.consume_and_expect("(")?;
+                        compile_block(lexer, function, globals, false)?;
+                        Result::Ok(())
+                    },
+                    function,
+                    globals,
+                    lexer,
+                    location,
+                )?;
             }
-            _ => {}
+            other_type => {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!("{} isn't Iterable", display_type(&other_type, globals)),
+                ))
+            }
         }
+        Result::Ok(())
+    } else {
+        Result::Err(lexer.make_error_report(
+            location,
+            &format!(
+                "expected Iterable, found {}",
+                function.stack_as_string(globals)
+            ),
+        ))
     }
-
-    Result::Err(lexer.make_error_report(
-        location,
-        &format!(
-            "expected Iterable, found {}",
-            function.stack_as_string(globals)
-        ),
-    ))
 }
 
 fn compile_free(
@@ -1576,53 +1453,47 @@ fn compile_block(
             Word::String(value) => {
                 function.push(Value::Global(globals.new_string(value)));
             }
-            Word::Id(id) if is_arithmetic_op(id) => {
+            Word::Id(id) if arithmetic_from_id(id).is_some() => {
                 let (a, b) =
                     function.pop2_of_type(Type::Int, Type::Int, globals, location, lexer)?;
 
-                let result_var = function.new_var(Type::Int);
-                function.push(Value::Variable(result_var));
-
-                function.add_instruction(Instruction::Arithemtic(
+                let result_var = compile_arithmetic(
                     arithmetic_from_id(id).expect(
                         "arithmetic from_id should succeed because it's checked in pattern guard",
                     ),
                     a,
                     b,
-                    result_var,
-                ));
+                    function,
+                );
+                function.push(Value::Variable(result_var));
             }
-            Word::Id(id) if is_relational_op(id) => {
+            Word::Id(id) if relational_from_id(id).is_some() => {
                 let (a, b) =
                     function.pop2_of_type(Type::Int, Type::Int, globals, location, lexer)?;
 
-                let result_var = function.new_var(Type::Bool);
-                function.push(Value::Variable(result_var));
-
-                function.add_instruction(Instruction::Relational(
+                let result_var = compile_relational(
                     relational_from_id(id).expect(
                         "relational from_id should succeed because it's checked in pattern guard",
                     ),
                     a,
                     b,
-                    result_var,
-                ));
+                    function,
+                );
+                function.push(Value::Variable(result_var));
             }
-            Word::Id(id) if is_logical_op(id) => {
+            Word::Id(id) if logical_from_id(id).is_some() => {
                 let (a, b) =
                     function.pop2_of_type(Type::Bool, Type::Bool, globals, location, lexer)?;
 
-                let result_var = function.new_var(Type::Bool);
-                function.push(Value::Variable(result_var));
-
-                function.add_instruction(Instruction::Logical(
+                let result_var = compile_logical(
                     logical_from_id(id).expect(
                         "logical from_id should succeed because it's checked in pattern guard",
                     ),
                     a,
                     b,
-                    result_var,
-                ));
+                    function,
+                );
+                function.push(Value::Variable(result_var));
             }
             Word::Id("!") => {
                 let value = function.pop_of_type(Type::Bool, globals, location, lexer)?;

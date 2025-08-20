@@ -1,1 +1,3 @@
 0 while (dup 5 <) (1 + "test while with counter" print) pop
+true while () ("should run once" print false)
+
