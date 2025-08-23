@@ -780,7 +780,8 @@ fn compile_refat(
             function.pop(globals).expect("stack is checked above");
             function.pop(globals).expect("stack is checked above");
 
-            match type_of(&container, function, globals) {
+            let ref_container_type = type_of(&container, function, globals);
+            match ref_container_type {
                 Type::Ptr(container_type) => {
                     if let Value::IntLiteral(index) = index {
                         let element_type = container_type
@@ -809,20 +810,26 @@ fn compile_refat(
                             result_var,
                         ));
                     }
-                    return Result::Ok(());
                 }
                 Type::Slice(element_type) => {
                     let result_var = compile_slice_refat(container, index, *element_type, function);
                     function.push(Value::Variable(result_var));
-                    return Result::Ok(());
                 }
                 Type::Vec(element_type) => {
                     let result_var = compile_vec_refat(container, index, *element_type, function);
                     function.push(Value::Variable(result_var));
-                    return Result::Ok(());
                 }
-                _ => {}
+                _ => {
+                    return Result::Err(lexer.make_error_report(
+                        location,
+                        &format!(
+                            "expected Indexable Ptr, A Slice or A Vec, found {}",
+                            display_type(&ref_container_type, globals)
+                        ),
+                    ));
+                }
             }
+            return Result::Ok(());
         }
     }
 
@@ -969,6 +976,63 @@ fn compile_vec_append(
         location,
         &format!(
             "expected A Vec A, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_remove_back(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(vec) = function.nth_from_top(0, globals) {
+        let vec_type = type_of(&vec, function, globals);
+        if let Some(element_type) = should_be_vec(vec_type.clone(), globals) {
+            function.pop(globals).expect("stack is checked above");
+
+            let new_len_var = compile_arithmetic(
+                Arithemtic::Sub,
+                Value::Length(Box::from(vec.clone()), location),
+                Value::IntLiteral(1),
+                function,
+            );
+
+            let new_vec_var = function.new_var(vec_type);
+            function.add_instruction(Instruction::InsertValue(
+                vec.clone(),
+                vec_underlying_type(element_type.clone()),
+                Value::Variable(new_len_var),
+                Type::Int,
+                1,
+                new_vec_var,
+            ));
+            function.push(Value::Variable(new_vec_var));
+
+            let element_ptr_var = compile_vec_refat(
+                vec,
+                Value::Variable(new_len_var),
+                element_type.clone(),
+                function,
+            );
+
+            let element_var = function.new_var(element_type.clone());
+            function.add_instruction(Instruction::Load(
+                Value::Variable(element_ptr_var),
+                element_type,
+                element_var,
+            ));
+            function.push(Value::Variable(element_var));
+
+            return Result::Ok(());
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Vec A, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -1739,6 +1803,7 @@ fn compile_block(
                 location,
             )),
             Word::Id("append") => compile_vec_append(function, globals, lexer, location)?,
+            Word::Id("remove_back") => compile_remove_back(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
                 return Err(lexer.make_error_report(location, &format!("Unknown word {id}")))
