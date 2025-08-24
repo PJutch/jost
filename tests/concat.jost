@@ -2,6 +2,6 @@ empty_vec 1 append
 empty_vec 2 append 3 append
 concat
 
-dup 0 refat load print
-dup 1 refat load print
-dup 2 refat load print
+0 refat load print pop
+1 refat load print pop
+2 refat load print pop

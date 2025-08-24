@@ -1,3 +1,4 @@
 empty_vec
 1 append
-0 refat load print
+0 refat load print pop
+destroy

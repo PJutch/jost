@@ -19,7 +19,7 @@ pub enum Value {
     Tuple(Vec<Value>, Vec<Type>),
     Array(Vec<Value>, Type),
     Slice(Box<Value>, Box<Value>),
-    Vec(Box<Value>, Box<Value>),
+    Vec(Box<Value>, Box<Value>, Box<Value>),
     Type(Type),
     Variable(i64),
     Arg(i64),
@@ -558,6 +558,7 @@ pub enum Instruction {
     Realloc(Value, Value, i64),
     Free(Value),
 
+    CheckNoDestructor(Type, Location),
     Clone(Value, Type, i64, Location),
     Destroy(Value, Type, Location),
 

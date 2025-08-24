@@ -128,7 +128,7 @@ fn to_llvm_type(type_: &Type) -> String {
         Type::Int => "i64".to_owned(),
         Type::Int32 => "i32".to_owned(),
         Type::Bool => "i1".to_owned(),
-        Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => "ptr".to_owned(),
+        Type::String | Type::Ref(_) | Type::Ptr(_) | Type::FnPtr(_, _) => "ptr".to_owned(),
         Type::Tuple(types) => {
             let mut type_string = "{".to_owned();
             for (i, type_) in types.iter().enumerate() {
@@ -146,7 +146,7 @@ fn to_llvm_type(type_: &Type) -> String {
         }
         Type::Array(type_, size) => format!("[{size} x {}]", to_llvm_type(type_)),
         Type::Slice(_) => "{ ptr, i64}".to_owned(),
-        Type::Vec(_) => "{ { ptr, i64 }, i64 }".to_owned(),
+        Type::Vec(_) => "{ ptr, i64, i64 }".to_owned(),
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }

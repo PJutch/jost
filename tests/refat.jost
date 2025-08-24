@@ -1,6 +1,8 @@
 [] 1 , 2 , 3 , alloca
-dup 2 refat
-dup load print
-dup 5 store
-load print
-load print
+  2 refat
+    load print
+    5 store
+    load print
+  pop
+  load print
+pop

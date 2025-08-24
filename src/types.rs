@@ -11,7 +11,7 @@ use crate::ir::Relational;
 use crate::ir::Scope;
 use crate::ir::Value;
 
-use crate::compile::compile_slice_get_ptr;
+use crate::compile::compile_vec_get_ptr;
 
 use std::collections::HashMap;
 
@@ -27,6 +27,7 @@ pub enum Type {
     Int32,
     Bool,
     String,
+    Ref(Box<Type>),
     Ptr(Box<Type>),
     FnPtr(Vec<Type>, Vec<Type>),
     Tuple(Vec<Type>),
@@ -64,9 +65,11 @@ impl Type {
 
     pub fn all_elements_type(&self) -> &Type {
         match self {
-            Type::Ptr(type_) | Type::Array(type_, _) | Type::Slice(type_) | Type::Vec(type_) => {
-                type_.as_ref()
-            }
+            Type::Ref(type_)
+            | Type::Ptr(type_)
+            | Type::Array(type_, _)
+            | Type::Slice(type_)
+            | Type::Vec(type_) => type_.as_ref(),
             Type::Tuple(_) => panic!("tuple elements are of different types"),
             Type::TypVar(_) => todo!("handle type vars"),
             _ => panic!("type has no elements"),
@@ -143,7 +146,7 @@ impl Type {
 
     fn alignment(&self) -> Result<i64, String> {
         Result::Ok(match self {
-            Type::Int | Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => 8,
+            Type::Int | Type::String | Type::Ref(_) | Type::Ptr(_) | Type::FnPtr(_, _) => 8,
             Type::Int32 => 4,
             Type::Bool => 1,
             Type::Tuple(types) => {
@@ -167,7 +170,7 @@ impl Type {
 
     pub fn byte_size(&self) -> Result<i64, String> {
         Result::Ok(match self {
-            Type::Int | Type::String | Type::Ptr(_) | Type::FnPtr(_, _) => 8,
+            Type::Int | Type::String | Type::Ref(_) | Type::Ptr(_) | Type::FnPtr(_, _) => 8,
             Type::Int32 => 4,
             Type::Bool => 1,
             Type::Tuple(types) => {
@@ -189,11 +192,15 @@ impl Type {
 }
 
 pub fn slice_underlying_type(element_type: Type) -> Type {
-    Type::Tuple(Vec::from([Type::Ptr(Box::from(element_type)), Type::Int]))
+    Type::Tuple(Vec::from([Type::Ref(Box::from(element_type)), Type::Int]))
 }
 
 pub fn vec_underlying_type(element_type: Type) -> Type {
-    Type::Tuple(Vec::from([Type::Slice(Box::from(element_type)), Type::Int]))
+    Type::Tuple(Vec::from([
+        Type::Ptr(Box::from(element_type)),
+        Type::Int,
+        Type::Int,
+    ]))
 }
 
 fn check_can_be_zeroed(
@@ -204,7 +211,7 @@ fn check_can_be_zeroed(
 ) -> Result<(), String> {
     match type_ {
         Type::Int | Type::Int32 | Type::Bool | Type::Slice(_) | Type::Vec(_) => Result::Ok(()),
-        Type::Ptr(_) | Type::String | Type::FnPtr(_, _) | Type::Typ => {
+        Type::Ref(_) | Type::Ptr(_) | Type::String | Type::FnPtr(_, _) | Type::Typ => {
             Result::Err(lexer.make_error_report(
                 location,
                 &format!(
@@ -279,20 +286,22 @@ fn resolve_types_value(
             }
             built_array
         }
-        Value::Slice(ptr, size) => {
-            let ptr = resolve_types_value(*ptr, function, globals, lexer)?;
+        Value::Slice(reference, size) => {
+            let reference = resolve_types_value(*reference, function, globals, lexer)?;
             let size = resolve_types_value(*size, function, globals, lexer)?;
 
-            let element_type = type_of(&ptr, function, globals).all_elements_type().clone();
+            let element_type = type_of(&reference, function, globals)
+                .all_elements_type()
+                .clone();
             let slice_type = Type::Slice(Box::from(element_type.clone()));
-            let ptr_type = Type::Ptr(Box::from(element_type.clone()));
+            let ref_type = Type::Ref(Box::from(element_type.clone()));
 
             let with_ptr_var = function.new_var(slice_type.clone());
             function.add_instruction(Instruction::InsertValue(
                 Value::Undefined,
                 slice_underlying_type(element_type.clone()),
-                ptr,
-                ptr_type,
+                reference,
+                ref_type,
                 0,
                 with_ptr_var,
             ));
@@ -309,33 +318,43 @@ fn resolve_types_value(
 
             Value::Variable(result_var)
         }
-        Value::Vec(slice, size) => {
-            let slice = resolve_types_value(*slice, function, globals, lexer)?;
+        Value::Vec(ptr, size, capacity) => {
+            let ptr = resolve_types_value(*ptr, function, globals, lexer)?;
             let size = resolve_types_value(*size, function, globals, lexer)?;
+            let capacity = resolve_types_value(*capacity, function, globals, lexer)?;
 
-            let element_type = type_of(&slice, function, globals)
-                .all_elements_type()
-                .clone();
+            let element_type = type_of(&ptr, function, globals).all_elements_type().clone();
             let vec_type = Type::Vec(Box::from(element_type.clone()));
-            let slice_type = Type::Slice(Box::from(element_type.clone()));
+            let underlying_type = vec_underlying_type(element_type.clone());
+            let ptr_type = Type::Ptr(Box::from(element_type.clone()));
 
-            let with_slice_var = function.new_var(vec_type.clone());
+            let with_ptr_var = function.new_var(vec_type.clone());
             function.add_instruction(Instruction::InsertValue(
                 Value::Undefined,
-                vec_underlying_type(element_type.clone()),
-                slice,
-                slice_type,
+                underlying_type.clone(),
+                ptr,
+                ptr_type,
                 0,
-                with_slice_var,
+                with_ptr_var,
+            ));
+
+            let with_size_var = function.new_var(vec_type.clone());
+            function.add_instruction(Instruction::InsertValue(
+                Value::Variable(with_ptr_var),
+                underlying_type.clone(),
+                size,
+                Type::Int,
+                1,
+                with_size_var,
             ));
 
             let result_var = function.new_var(vec_type);
             function.add_instruction(Instruction::InsertValue(
-                Value::Variable(with_slice_var),
-                vec_underlying_type(element_type),
-                size,
+                Value::Variable(with_size_var),
+                underlying_type,
+                capacity,
                 Type::Int,
-                1,
+                2,
                 result_var,
             ));
 
@@ -383,7 +402,7 @@ fn resolve_types_value(
                     return Result::Err(lexer.make_error_report(
                         location,
                         &format!(
-                            "expected Tuple or Array, found {}",
+                            "expected Container, found {}",
                             display_type(&type_, globals)
                         ),
                     ))
@@ -434,6 +453,7 @@ impl DisplayTypesContext {
             Type::Int32 => "Int32".to_owned(),
             Type::Bool => "Bool".to_owned(),
             Type::String => "String".to_owned(),
+            Type::Ref(type_) => format!("{} Ref", self.display_type(type_.as_ref(), globals)),
             Type::Ptr(type_) => format!("{} Ptr", self.display_type(type_.as_ref(), globals)),
             Type::FnPtr(arg_types, result_types) => {
                 format!(
@@ -514,7 +534,7 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
         Value::Slice(ptr, _) => Type::Slice(Box::from(
             type_of(ptr, function, globals).all_elements_type().clone(),
         )),
-        Value::Vec(ptr, _) => Type::Vec(Box::from(
+        Value::Vec(ptr, _, _) => Type::Vec(Box::from(
             type_of(ptr, function, globals).all_elements_type().clone(),
         )),
         Value::Type(_) => Type::Typ,
@@ -642,9 +662,11 @@ fn resolve_print(
         }
         Type::Slice(_) => todo!("implement print for slice"),
         Type::Vec(_) => todo!("implement print for vec"),
-        Type::FnPtr(_, _) | Type::Ptr(_) => function.add_instruction(Instruction::Putstr(
-            Value::Global(globals.new_string(&display_type(&type_, globals))),
-        )),
+        Type::FnPtr(_, _) | Type::Ref(_) | Type::Ptr(_) => {
+            function.add_instruction(Instruction::Putstr(Value::Global(
+                globals.new_string(&display_type(&type_, globals)),
+            )))
+        }
         Type::Typ => {
             if let Value::Type(type_) = resolve_types_value(value, function, globals, lexer)? {
                 function.add_instruction(Instruction::Putstr(Value::Global(
@@ -657,6 +679,16 @@ fn resolve_print(
         Type::TypVar(_) => panic!("resolve_actual_type returned type var"),
     }
     Result::Ok(())
+}
+
+fn has_destructor(type_: Type) -> bool {
+    match type_ {
+        Type::Ptr(_) | Type::Vec(_) => true,
+        Type::Tuple(types) => types.into_iter().any(has_destructor),
+        Type::Array(element_type, _) => has_destructor(*element_type),
+        Type::TypVar(_) => panic!("type var should be resolved before calling this"),
+        _ => false,
+    }
 }
 
 fn resolve_clone(
@@ -703,25 +735,25 @@ fn resolve_clone(
             Result::Ok(clonable)
         }
         Type::Array(_, _) => todo!("clone array"),
-        Type::Slice(element_type) => {
+        Type::Vec(element_type) => {
             let (ptr_var, ptr_type) =
-                compile_slice_get_ptr(value.clone(), element_type.deref().clone(), function);
+                compile_vec_get_ptr(value.clone(), element_type.deref().clone(), function);
 
             let element_size = element_type.byte_size()?;
 
-            let element_count_var = function.new_var(Type::Int);
+            let capacity_var = function.new_var(Type::Int);
             function.add_instruction(Instruction::ExtractValue(
                 value.clone(),
                 slice_underlying_type(element_type.deref().clone()),
                 Type::Int,
-                1,
-                element_count_var,
+                2,
+                capacity_var,
             ));
 
             let allocation_size_var = compile_arithmetic(
                 Arithemtic::Mul,
                 Value::IntLiteral(element_size),
-                Value::Variable(element_count_var),
+                Value::Variable(capacity_var),
                 function,
             );
 
@@ -749,12 +781,6 @@ fn resolve_clone(
 
             Result::Ok(true)
         }
-        Type::Vec(element_type) => resolve_clone(
-            value,
-            vec_underlying_type(element_type.deref().clone()),
-            result_var,
-            function,
-        ),
         _ => Result::Ok(false),
     }
 }
@@ -785,14 +811,6 @@ fn resolve_destroy(value: Value, type_: Type, function: &mut Function) -> bool {
             destroyable
         }
         Type::Array(_, _) => todo!("destroy array"),
-        Type::Slice(element_type) => {
-            // TODO: destroy slice contents
-            resolve_destroy(
-                value,
-                slice_underlying_type(element_type.deref().clone()),
-                function,
-            )
-        }
         Type::Vec(element_type) => {
             // TODO: destroy vec contents
             resolve_destroy(
@@ -841,7 +859,7 @@ fn resolve_input(
             ));
         }
         Type::Tuple(_) | Type::Array(_, _) | Type::Slice(_) | Type::Vec(_) => todo!("input lists"),
-        Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
+        Type::Ref(_) | Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
             return Result::Err(lexer.make_error_report(
                 location,
                 &format!("can't input a {}", display_type(&type_, globals)),
@@ -929,6 +947,17 @@ fn resolve_types_instruction(
             let ptr = resolve_types_value(ptr, function, globals, lexer)?;
             function.add_instruction(Instruction::Free(ptr));
         }
+        Instruction::CheckNoDestructor(type_, location) => {
+            if has_destructor(resolve_actual_type(&type_, globals, lexer)?) {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!(
+                        "value of type {} should be properly cloned and destroyed",
+                        display_type(&type_, globals)
+                    ),
+                ));
+            }
+        }
         Instruction::Clone(value, type_, result_var, location) => {
             if !resolve_clone(
                 resolve_types_value(value, function, globals, lexer)?,
@@ -939,7 +968,7 @@ fn resolve_types_instruction(
                 return Result::Err(lexer.make_error_report(
                     location,
                     &format!(
-                        "value of type {} doesn't need to be destroyed",
+                        "value of type {} doesn't need to be cloned",
                         display_type(&type_, globals)
                     ),
                 ));
@@ -988,7 +1017,7 @@ fn resolve_types_instruction(
             let value = resolve_types_value(value, function, globals, lexer)?;
             let value_type = resolve_actual_type(&value_type, globals, lexer)?;
 
-            let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
+            let ptr_var = function.new_var(Type::Ref(Box::from(tuple_type.clone())));
             function.add_instruction(Instruction::Alloca(tuple_type.clone(), ptr_var));
             function.add_instruction(Instruction::Store(
                 Value::Variable(ptr_var),
@@ -1002,7 +1031,7 @@ fn resolve_types_instruction(
                 tuple_type.clone()
             };
 
-            let element_ptr_var = function.new_var(Type::Ptr(Box::from(value_type.clone())));
+            let element_ptr_var = function.new_var(Type::Ref(Box::from(value_type.clone())));
             function.add_instruction(Instruction::GetElementPtr(
                 viewed_through_type,
                 Value::Variable(ptr_var),
@@ -1027,7 +1056,7 @@ fn resolve_types_instruction(
             let tuple_type = resolve_actual_type(&tuple_type, globals, lexer)?;
             let value_type = resolve_actual_type(&value_type, globals, lexer)?;
 
-            let ptr_var = function.new_var(Type::Ptr(Box::from(tuple_type.clone())));
+            let ptr_var = function.new_var(Type::Ref(Box::from(tuple_type.clone())));
             function.add_instruction(Instruction::Alloca(tuple_type.clone(), ptr_var));
             function.add_instruction(Instruction::Store(
                 Value::Variable(ptr_var),
@@ -1041,7 +1070,7 @@ fn resolve_types_instruction(
                 tuple_type.clone()
             };
 
-            let element_ptr_var = function.new_var(Type::Ptr(Box::from(value_type.clone())));
+            let element_ptr_var = function.new_var(Type::Ref(Box::from(value_type.clone())));
             function.add_instruction(Instruction::GetElementPtr(
                 viewed_through_type,
                 Value::Variable(ptr_var),
@@ -1207,6 +1236,7 @@ pub fn resolve_type(type_: &Type, globals: &Globals) -> Type {
         Type::Array(type_, size) => {
             Type::Array(Box::from(resolve_type(type_.as_ref(), globals)), *size)
         }
+        Type::Ref(type_) => Type::Ref(Box::from(resolve_type(type_.as_ref(), globals))),
         Type::Ptr(type_) => Type::Ptr(Box::from(resolve_type(type_.as_ref(), globals))),
         Type::Slice(type_) => Type::Slice(Box::from(resolve_type(type_.as_ref(), globals))),
         Type::Vec(type_) => Type::Vec(Box::from(resolve_type(type_.as_ref(), globals))),
@@ -1235,6 +1265,13 @@ pub fn merge_types(type1: &Type, type2: &Type, globals: &mut Globals) -> bool {
                 true
             }
         }
+        Type::Ref(element_type1) => match type2 {
+            Type::Ref(element_type2) => {
+                merge_types(element_type1.as_ref(), element_type2.as_ref(), globals)
+            }
+            Type::TypVar(_) => merge_types(type2, type1, globals),
+            _ => false,
+        },
         Type::Ptr(element_type1) => match type2 {
             Type::Ptr(element_type2) => {
                 merge_types(element_type1.as_ref(), element_type2.as_ref(), globals)
@@ -1301,6 +1338,20 @@ pub fn merge_type_lists(types1: &[Type], types2: &[Type], globals: &mut Globals)
         types_match
     } else {
         false
+    }
+}
+
+pub fn should_be_ref(type_: Type, globals: &mut Globals) -> Option<Type> {
+    match resolve_type(&type_, globals) {
+        Type::Ref(value_type) => Option::Some(*value_type),
+        Type::TypVar(index) => {
+            let value_type = Type::TypVar(globals.new_type_var(globals.type_var_locations[&index]));
+            globals
+                .type_vars
+                .insert(index, Type::Ref(Box::from(value_type.clone())));
+            Option::Some(value_type)
+        }
+        _ => Option::None,
     }
 }
 

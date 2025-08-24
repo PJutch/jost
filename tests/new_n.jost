@@ -1,5 +1,0 @@
-10 new_n
-  dup 7 refat
-    dup 5 store
-    load print
-destroy

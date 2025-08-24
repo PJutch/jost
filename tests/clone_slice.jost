@@ -1,9 +1,0 @@
-5 new_n
-  3 refat 1 store
-  clone swp
-  3 refat 2 store
-
-  swp
-  3 refat load print
-  destroy
-destroy
