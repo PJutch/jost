@@ -1,4 +1,4 @@
 1 new
-dup clone
+clone
 free
 free

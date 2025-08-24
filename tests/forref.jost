@@ -1,1 +1,1 @@
-empty_vec 1 append 2 append 3 append forref (load print)
+empty_vec 1 append 2 append 3 append forref (load print) pop

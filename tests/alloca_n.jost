@@ -2,3 +2,4 @@
 7 refat
 dup 5 store
 load print
+pop

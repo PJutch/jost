@@ -598,7 +598,7 @@ fn compile_at(
         let container_type = type_of(&container, function, globals);
         if let Some(index) = function.nth_from_top(0, globals) {
             function.pop(globals).expect("stack is checked above");
-            function.pop(globals).expect("stack is checked above");
+
             if let Value::IntLiteral(index) = index {
                 let element_type =
                     container_type.index_type_statically(index, globals, lexer, location)?;
@@ -777,7 +777,6 @@ fn compile_refat(
 ) -> Result<(), String> {
     if let Some(container) = function.nth_from_top(1, globals) {
         if let Some(index) = function.nth_from_top(0, globals) {
-            function.pop(globals).expect("stack is checked above");
             function.pop(globals).expect("stack is checked above");
 
             let ref_container_type = type_of(&container, function, globals);
@@ -1172,37 +1171,53 @@ fn compile_to_slice(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(ptr) = function.nth_from_top(0, globals) {
-        if let Some(contaner_type) = should_be_ptr(type_of(&ptr, function, globals), globals) {
-            let element_type = contaner_type
-                .index_type_dinamically(globals, lexer, location)?
-                .clone();
-            function.pop(globals).expect("stack is checked above");
+    if let Some(ref_container) = function.nth_from_top(0, globals) {
+        match type_of(&ref_container, function, globals) {
+            Type::Ptr(container_type) => {
+                let element_type = container_type
+                    .index_type_dinamically(globals, lexer, location)?
+                    .clone();
 
-            let ptr_var = function.new_var(Type::Ptr(Box::from(element_type)));
-            function.add_instruction(Instruction::GetElementPtr(
-                contaner_type.clone(),
-                ptr.clone(),
-                Value::IntLiteral(0),
-                ptr_var,
-            ));
+                let ptr_var = function.new_var(Type::Ptr(Box::from(element_type)));
+                function.add_instruction(Instruction::GetElementPtr(
+                    container_type.deref().clone(),
+                    ref_container.clone(),
+                    Value::IntLiteral(0),
+                    ptr_var,
+                ));
 
-            function.push(Value::Slice(
-                Box::from(Value::Variable(ptr_var)),
-                Box::from(Value::Length(
-                    Box::from(Value::Zeroed(contaner_type, location)),
-                    location,
-                )),
-            ));
+                function.push(Value::Slice(
+                    Box::from(Value::Variable(ptr_var)),
+                    Box::from(Value::Length(
+                        Box::from(Value::Zeroed(*container_type, location)),
+                        location,
+                    )),
+                ));
 
-            return Result::Ok(());
+                return Result::Ok(());
+            }
+            Type::Vec(element_type) => {
+                let (slice_var, _) = compile_vec_to_slice(
+                    ref_container.clone(),
+                    element_type.deref().clone(),
+                    function,
+                );
+                let (ptr_var, _) =
+                    compile_slice_get_ptr(Value::Variable(slice_var), *element_type, function);
+                function.push(Value::Slice(
+                    Box::from(Value::Variable(ptr_var)),
+                    Box::from(Value::Length(Box::from(ref_container), location)),
+                ));
+                return Result::Ok(());
+            }
+            _ => {}
         }
     }
 
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected A n Array Ptr,  found {}",
+            "expected A n Array Ptr or A Vec, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -1376,7 +1391,6 @@ fn compile_forref(
         match type_of(&ref_container, function, globals) {
             Type::Ptr(container_type) => match *container_type {
                 Type::Tuple(_) | Type::Array(_, _) => {
-                    function.pop(globals).expect("stack is checked above");
                     let opening_braket_location = lexer.consume_and_expect("(")?;
                     let start_byte = lexer.current_byte;
                     for i in 0..container_type.compiletime_len() {
@@ -1653,8 +1667,9 @@ fn compile_block(
             Word::Id("setat") => compile_set_at(function, globals, lexer, location)?,
             Word::Id("refat") => compile_refat(function, globals, lexer, location)?,
             Word::Id("len") => {
-                let tuple = function.pop_of_any_type(globals, location, lexer)?;
-                function.push(Value::Length(Box::new(tuple), location));
+                let container = function.pop_of_any_type(globals, location, lexer)?;
+                function.push(container.clone());
+                function.push(Value::Length(Box::new(container), location));
             }
             Word::Id("slice_from_parts") => {
                 compile_slice_from_parts(function, globals, lexer, location)?
@@ -1789,7 +1804,14 @@ fn compile_block(
                 let type_ = type_of(&value, function, globals);
 
                 let result_var = function.new_var(type_.clone());
-                function.add_instruction(Instruction::Clone(value, type_, result_var, location));
+                function.add_instruction(Instruction::Clone(
+                    value.clone(),
+                    type_,
+                    result_var,
+                    location,
+                ));
+
+                function.push(value);
                 function.push(Value::Variable(result_var));
             }
             Word::Id("concat") => compile_concat(function, globals, lexer, location)?,

@@ -1,8 +1,9 @@
 [] "hello" , "world" ,
 "test" 0 1 + setat
-dup 1 1 - at print
+1 1 - at print
 print
 
 [] zeroed , 1 ,
 dup print
 5 5 - at print
+pop
