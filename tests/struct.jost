@@ -1,0 +1,11 @@
+Struct
+  Int field a
+  String field b
+
+undefined swp :
+  1 .a=
+  "test" .b=
+
+dup .a print
+print
+

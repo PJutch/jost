@@ -34,6 +34,7 @@ pub enum Type {
     Array(Box<Type>, i64),
     Slice(Box<Type>),
     Vec(Box<Type>),
+    Struct(Vec<(String, Type)>),
     Typ,
     TypVar(i64),
 }
@@ -159,6 +160,7 @@ impl Type {
             Type::Array(type_, _) => type_.alignment()?,
             Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).alignment()?,
             Type::Vec(type_) => vec_underlying_type(type_.deref().clone()).alignment()?,
+            Type::Struct(members) => struct_underlying_type(members.clone()).alignment()?,
             Type::Typ => {
                 return Result::Err("types don't have a runtime representation".to_owned())
             }
@@ -183,6 +185,7 @@ impl Type {
             Type::Array(type_, size) => type_.byte_size()? * size,
             Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).byte_size()?,
             Type::Vec(type_) => vec_underlying_type(type_.deref().clone()).byte_size()?,
+            Type::Struct(members) => struct_underlying_type(members.clone()).byte_size()?,
             Type::Typ => {
                 return Result::Err("types don't have a runtime representation".to_owned())
             }
@@ -201,6 +204,21 @@ pub fn vec_underlying_type(element_type: Type) -> Type {
         Type::Int,
         Type::Int,
     ]))
+}
+
+pub fn struct_underlying_type(members: Vec<(String, Type)>) -> Type {
+    Type::Tuple(members.into_iter().map(|(_, type_)| type_).collect())
+}
+
+fn field_index(fields: Vec<(String, Type)>, field_name: &str) -> Result<i64, String> {
+    Result::Ok(
+        fields
+            .iter()
+            .enumerate()
+            .find(|(_, (name, _))| *name == field_name)
+            .ok_or("field not found")?
+            .0 as i64,
+    )
 }
 
 fn check_can_be_zeroed(
@@ -226,15 +244,29 @@ fn check_can_be_zeroed(
             }
             Result::Ok(())
         }
+        Type::Struct(members) => check_can_be_zeroed(
+            &struct_underlying_type(members.clone()),
+            globals,
+            lexer,
+            location,
+        ),
         Type::Array(element_type, _) => check_can_be_zeroed(element_type, globals, lexer, location),
         Type::TypVar(_) => panic!("unresolved type var can't be checked if it can be zeroed"),
     }
 }
 
+fn make_undefined(globals: &mut Globals) -> Value {
+    let bogus_location = Location { start: -1, end: -1 };
+    Value::Undefined(
+        Type::TypVar(globals.new_type_var(bogus_location)),
+        bogus_location,
+    )
+}
+
 fn resolve_types_value(
     value: Value,
     function: &mut Function,
-    globals: &Globals,
+    globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<Value, String> {
     Result::Ok(match value {
@@ -248,9 +280,10 @@ fn resolve_types_value(
                 .map(|type_| resolve_actual_type(type_, globals, lexer))
                 .collect::<Result<Vec<Type>, String>>()?;
 
-            let mut built_tuple = Value::Undefined;
+            let mut built_tuple = make_undefined(globals);
             for (i, value) in values.into_iter().enumerate() {
                 let next_var = function.new_var(Type::Tuple(types.clone()));
+
                 function.add_instruction(Instruction::InsertValue(
                     built_tuple,
                     Type::Tuple(types.clone()),
@@ -271,7 +304,7 @@ fn resolve_types_value(
             let type_ = resolve_actual_type(&type_, globals, lexer)?;
 
             let array_type = Type::Array(Box::from(type_.clone()), values.len() as i64);
-            let mut built_array = Value::Undefined;
+            let mut built_array = make_undefined(globals);
             for (i, value) in values.into_iter().enumerate() {
                 let next_var = function.new_var(array_type.clone());
                 function.add_instruction(Instruction::InsertValue(
@@ -298,7 +331,7 @@ fn resolve_types_value(
 
             let with_ptr_var = function.new_var(slice_type.clone());
             function.add_instruction(Instruction::InsertValue(
-                Value::Undefined,
+                make_undefined(globals),
                 slice_underlying_type(element_type.clone()),
                 reference,
                 ref_type,
@@ -330,7 +363,7 @@ fn resolve_types_value(
 
             let with_ptr_var = function.new_var(vec_type.clone());
             function.add_instruction(Instruction::InsertValue(
-                Value::Undefined,
+                make_undefined(globals),
                 underlying_type.clone(),
                 ptr,
                 ptr_type,
@@ -471,6 +504,24 @@ impl DisplayTypesContext {
             ),
             Type::Slice(type_) => format!("{} Slice", self.display_type(type_.as_ref(), globals)),
             Type::Vec(type_) => format!("{} Vec", self.display_type(type_.as_ref(), globals)),
+            Type::Struct(members) => {
+                let mut result = String::from("Struct (");
+
+                let has_members = !members.is_empty();
+                for (name, type_) in members {
+                    result += " ";
+                    result += &name;
+                    result += " ";
+                    result += &self.display_type(&type_, globals);
+                }
+
+                if has_members {
+                    result += " ";
+                }
+                result += ")";
+
+                result
+            }
             Type::Typ => "Type".to_owned(),
             Type::TypVar(i) => self.type_var_name(i),
         }
@@ -554,7 +605,7 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
                 .collect(),
         ),
         Value::Zeroed(type_, _) => resolve_type(type_, globals),
-        Value::Undefined => todo!("make undefined know its type"),
+        Value::Undefined(type_, _) => resolve_type(type_, globals),
     }
 }
 
@@ -662,6 +713,7 @@ fn resolve_print(
         }
         Type::Slice(_) => todo!("implement print for slice"),
         Type::Vec(_) => todo!("implement print for vec"),
+        Type::Struct(_) => todo!("implement print for struct"),
         Type::FnPtr(_, _) | Type::Ref(_) | Type::Ptr(_) => {
             function.add_instruction(Instruction::Putstr(Value::Global(
                 globals.new_string(&display_type(&type_, globals)),
@@ -859,6 +911,7 @@ fn resolve_input(
             ));
         }
         Type::Tuple(_) | Type::Array(_, _) | Type::Slice(_) | Type::Vec(_) => todo!("input lists"),
+        Type::Struct(_) => todo!("input structs"),
         Type::Ref(_) | Type::Ptr(_) | Type::FnPtr(_, _) | Type::Typ => {
             return Result::Err(lexer.make_error_report(
                 location,
@@ -1098,6 +1151,61 @@ fn resolve_types_instruction(
                 type_, value, index, result_var,
             ));
         }
+        Instruction::GetField(struct_value, fields, field_type, field_name, result_var) => {
+            let struct_value = resolve_types_value(struct_value, function, globals, lexer)?;
+            let fields = resolve_actual_fields(fields, globals, lexer)?;
+            let field_type = resolve_actual_type(&field_type, globals, lexer)?;
+
+            let underlying_type = struct_underlying_type(fields.clone());
+            let field_index = field_index(fields, &field_name)?;
+
+            function.add_instruction(Instruction::ExtractValue(
+                struct_value,
+                underlying_type,
+                field_type,
+                field_index,
+                result_var,
+            ));
+        }
+        Instruction::SetField(
+            struct_value,
+            fields,
+            field_value,
+            field_type,
+            field_name,
+            result_var,
+        ) => {
+            let struct_value = resolve_types_value(struct_value, function, globals, lexer)?;
+            let fields = resolve_actual_fields(fields, globals, lexer)?;
+            let field_value = resolve_types_value(field_value, function, globals, lexer)?;
+            let field_type = resolve_actual_type(&field_type, globals, lexer)?;
+
+            let underlying_type = struct_underlying_type(fields.clone());
+            let field_index = field_index(fields, &field_name)?;
+
+            function.add_instruction(Instruction::InsertValue(
+                struct_value,
+                underlying_type,
+                field_value,
+                field_type,
+                field_index,
+                result_var,
+            ));
+        }
+        Instruction::GetFieldPtr(ptr_value, fields, _, field_name, result_var) => {
+            let ptr_value = resolve_types_value(ptr_value, function, globals, lexer)?;
+            let fields = resolve_actual_fields(fields, globals, lexer)?;
+
+            let underlying_type = struct_underlying_type(fields.clone());
+            let field_index = field_index(fields, &field_name)?;
+
+            function.add_instruction(Instruction::GetElementPtr(
+                underlying_type,
+                ptr_value,
+                Value::IntLiteral(field_index),
+                result_var,
+            ));
+        }
         Instruction::Bitcast(value, from, to, result_var) => {
             let value = resolve_types_value(value, function, globals, lexer)?;
             function.add_instruction(Instruction::Bitcast(
@@ -1246,11 +1354,26 @@ pub fn resolve_type(type_: &Type, globals: &Globals) -> Type {
 
 pub fn resolve_actual_type(type_: &Type, globals: &Globals, lexer: &Lexer) -> Result<Type, String> {
     let resolved_type = resolve_type(type_, globals);
-    if let Type::TypVar(i) = resolved_type {
-        Result::Err(lexer.make_error_report(globals.type_var_locations[&i], "Ambigous type"))
-    } else {
-        Result::Ok(resolved_type)
+    match resolved_type {
+        Type::TypVar(i) => {
+            Result::Err(lexer.make_error_report(globals.type_var_locations[&i], "Ambigous type"))
+        }
+        Type::Struct(members) => Result::Ok(struct_underlying_type(members)),
+        _ => Result::Ok(resolved_type),
     }
+}
+
+pub fn resolve_actual_fields(
+    fields: Vec<(String, Type)>,
+    globals: &Globals,
+    lexer: &Lexer,
+) -> Result<Vec<(String, Type)>, String> {
+    fields
+        .into_iter()
+        .map(|(name, field_type)| {
+            Result::Ok((name, resolve_actual_type(&field_type, globals, lexer)?))
+        })
+        .collect()
 }
 
 pub fn merge_types(type1: &Type, type2: &Type, globals: &mut Globals) -> bool {
@@ -1379,6 +1502,13 @@ pub fn should_be_vec(type_: Type, globals: &mut Globals) -> Option<Type> {
                 .insert(index, Type::Vec(Box::from(value_type.clone())));
             Option::Some(value_type)
         }
+        _ => Option::None,
+    }
+}
+
+pub fn should_be_struct(type_: Type, globals: &mut Globals) -> Option<Vec<(String, Type)>> {
+    match resolve_type(&type_, globals) {
+        Type::Struct(fields) => Option::Some(fields),
         _ => Option::None,
     }
 }

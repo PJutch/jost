@@ -9,8 +9,8 @@ pub enum Word<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Location {
-    start: i64,
-    end: i64,
+    pub start: i64,
+    pub end: i64,
 }
 
 impl Location {

@@ -3,6 +3,7 @@ use crate::types::display_type_list;
 use crate::types::merge_types;
 use crate::types::should_be_ptr;
 use crate::types::should_be_ref;
+use crate::types::should_be_struct;
 use crate::types::should_be_vec;
 use crate::types::slice_underlying_type;
 use crate::types::type_of;
@@ -21,6 +22,7 @@ use crate::ir::Relational;
 use crate::ir::Scope;
 use crate::ir::Value;
 
+use crate::types::resolve_type;
 use crate::types::resolve_types_function;
 use crate::types::vec_underlying_type;
 use crate::types::Type;
@@ -1515,6 +1517,121 @@ fn compile_free(
     ))
 }
 
+fn compile_field(
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &mut Lexer,
+    location: Location,
+) -> Result<(), String> {
+    let (name, _) = lexer.consume_id()?;
+
+    if let Some(Value::Type(struct_type)) = function.nth_from_top(1, globals) {
+        if let Type::Struct(mut fields) = resolve_type(&struct_type, globals) {
+            if let Some(Value::Type(field_type)) = function.nth_from_top(0, globals) {
+                function.pop(globals);
+                function.pop(globals);
+
+                fields.push((name.to_owned(), field_type));
+                function.push(Value::Type(Type::Struct(fields)));
+                return Result::Ok(());
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Struct, found {}",
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_get_field(
+    field: &str,
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(structure) = function.nth_from_top(0, globals) {
+        let structure_type = type_of(&structure, function, globals);
+        if let Some(fields) = should_be_struct(structure_type, globals) {
+            if let Some((_, type_)) = fields.iter().find(|(name, _)| name == field) {
+                let type_ = type_.clone();
+
+                function.pop(globals);
+
+                let result_var = function.new_var(type_.clone());
+                function.push(Value::Variable(result_var));
+
+                function.add_instruction(Instruction::GetField(
+                    structure,
+                    fields,
+                    type_,
+                    field.into(),
+                    result_var,
+                ));
+                return Result::Ok(());
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Struct (... {} A ... ), found {}",
+            field,
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
+fn compile_set_field(
+    field: &str,
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(structure) = function.nth_from_top(1, globals) {
+        let structure_type = type_of(&structure, function, globals);
+        if let Some(fields) = should_be_struct(structure_type.clone(), globals) {
+            if let Some((_, type_)) = fields.iter().find(|(name, _)| name == field) {
+                let type_ = type_.clone();
+                if let Some(value) = function.nth_from_top(0, globals) {
+                    if merge_types(&type_of(&value, function, globals), &type_, globals) {
+                        function.pop(globals);
+                        function.pop(globals);
+
+                        let result_var = function.new_var(structure_type);
+                        function.push(Value::Variable(result_var));
+
+                        function.add_instruction(Instruction::SetField(
+                            structure,
+                            fields,
+                            value,
+                            type_,
+                            field.into(),
+                            result_var,
+                        ));
+                        return Result::Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Struct (... {} A ... ) A, found {}",
+            field,
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -1536,6 +1653,15 @@ fn compile_block(
                     lexer,
                     location,
                 )?;
+                continue;
+            }
+
+            if let Some(field) = id.strip_prefix(".") {
+                if let Some(field) = field.strip_suffix("=") {
+                    compile_set_field(field, function, globals, lexer, location)?
+                } else {
+                    compile_get_field(field, function, globals, lexer, location)?
+                }
                 continue;
             }
         }
@@ -1605,6 +1731,12 @@ fn compile_block(
             }
             Word::Id("zeroed") => {
                 function.push(Value::Zeroed(
+                    Type::TypVar(globals.new_type_var(location)),
+                    location,
+                ));
+            }
+            Word::Id("undefined") => {
+                function.push(Value::Undefined(
                     Type::TypVar(globals.new_type_var(location)),
                     location,
                 ));
@@ -1850,6 +1982,8 @@ fn compile_block(
             )),
             Word::Id("append") => compile_vec_append(function, globals, lexer, location)?,
             Word::Id("remove_back") => compile_remove_back(function, globals, lexer, location)?,
+            Word::Id("Struct") => function.push(Value::Type(Type::Struct(Vec::new()))),
+            Word::Id("field") => compile_field(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {
                 return Err(lexer.make_error_report(location, &format!("Unknown word {id}")))

@@ -48,7 +48,7 @@ impl GenerationContext {
             Value::BoolLiteral(value) => (if *value { "true" } else { "false" }).to_owned(),
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
-            Value::Undefined => "undef".to_owned(),
+            Value::Undefined(_, _) => "undef".to_owned(),
             Value::Zeroed(_, _) => "zeroinitializer".to_owned(),
             _ => panic!("value {value:?} shouldn't get to codegen"),
         }
@@ -58,7 +58,7 @@ impl GenerationContext {
         match value {
             Value::Variable(index) | Value::Arg(index) => format!("%{}", self.var_numbers[index]),
             Value::Global(name) | Value::Function(name) => format!("@{name}"),
-            Value::Undefined => "undef".to_owned(),
+            Value::Undefined(_, _) => "undef".to_owned(),
             _ => panic!("value {value:?} isn't callable"),
         }
     }
@@ -147,6 +147,7 @@ fn to_llvm_type(type_: &Type) -> String {
         Type::Array(type_, size) => format!("[{size} x {}]", to_llvm_type(type_)),
         Type::Slice(_) => "{ ptr, i64}".to_owned(),
         Type::Vec(_) => "{ ptr, i64, i64 }".to_owned(),
+        Type::Struct(_) => "undesugared struct type got to code gen".to_owned(),
         Type::Typ => panic!("types can't be used at runtime"),
         Type::TypVar(_) => panic!("unresolved type var found in code gen"),
     }

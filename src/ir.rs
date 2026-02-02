@@ -26,7 +26,7 @@ pub enum Value {
     Global(String),
     Function(String),
     Zeroed(Type, Location),
-    Undefined,
+    Undefined(Type, Location),
     Length(Box<Value>, Location),
     SizeOf(Type),
 }
@@ -570,6 +570,10 @@ pub enum Instruction {
 
     GetElementPtr(Type, Value, Value, i64),
     GetNeighbourPtr(Type, Value, Value, i64),
+
+    GetField(Value, Vec<(String, Type)>, Type, String, i64),
+    SetField(Value, Vec<(String, Type)>, Value, Type, String, i64),
+    GetFieldPtr(Value, Vec<(String, Type)>, Type, String, i64),
 
     Bitcast(Value, Type, Type, i64),
 
