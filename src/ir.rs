@@ -4,8 +4,12 @@ use crate::lex::Location;
 use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
+use crate::types::resolve_actual_type;
+use crate::types::resolve_types_value;
 use crate::types::type_of;
 use crate::types::Type;
+
+use jost_macros::ResolveTypes;
 
 use std::collections::HashMap;
 
@@ -560,7 +564,11 @@ pub struct Phi {
     pub case2: Value,
 }
 
-#[derive(Debug, Clone, Default)]
+pub trait ResolveTypes {
+    fn resolve_types(self, function: &mut Function, globals: &mut Globals, lexer: &Lexer) -> Result<Self, String> where Self: Sized;
+}
+
+#[derive(Debug, Clone, Default, ResolveTypes)]
 pub enum Instruction {
     #[default]
     Bogus,

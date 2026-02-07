@@ -3,13 +3,6 @@
 version = 4
 
 [[package]]
-name = "jost"
-version = "0.1.0"
-dependencies = [
- "jost-macros",
-]
-
-[[package]]
 name = "jost-macros"
 version = "0.1.0"
 dependencies = [

@@ -8,6 +8,7 @@ use crate::ir::Globals;
 use crate::ir::Instruction;
 use crate::ir::Phi;
 use crate::ir::Relational;
+use crate::ir::ResolveTypes;
 use crate::ir::Scope;
 use crate::ir::Value;
 
@@ -263,7 +264,7 @@ fn make_undefined(globals: &mut Globals) -> Value {
     )
 }
 
-fn resolve_types_value(
+pub fn resolve_types_value(
     value: Value,
     function: &mut Function,
     globals: &mut Globals,
@@ -320,78 +321,28 @@ fn resolve_types_value(
             built_array
         }
         Value::Slice(reference, size) => {
-            let reference = resolve_types_value(*reference, function, globals, lexer)?;
-            let size = resolve_types_value(*size, function, globals, lexer)?;
-
-            let element_type = type_of(&reference, function, globals)
-                .all_elements_type()
-                .clone();
-            let slice_type = Type::Slice(Box::from(element_type.clone()));
-            let ref_type = Type::Ref(Box::from(element_type.clone()));
-
-            let with_ptr_var = function.new_var(slice_type.clone());
-            function.add_instruction(Instruction::InsertValue(
-                make_undefined(globals),
-                slice_underlying_type(element_type.clone()),
-                reference,
-                ref_type,
-                0,
-                with_ptr_var,
-            ));
-
-            let result_var = function.new_var(slice_type);
-            function.add_instruction(Instruction::InsertValue(
-                Value::Variable(with_ptr_var),
-                slice_underlying_type(element_type),
-                size,
-                Type::Int,
-                1,
-                result_var,
-            ));
-
-            Value::Variable(result_var)
+            let reference_type = type_of(&reference, function, globals);
+            resolve_types_value(
+                Value::Tuple(
+                    Vec::from([*reference, *size]),
+                    Vec::from([reference_type, Type::Int]),
+                ),
+                function,
+                globals,
+                lexer,
+            )?
         }
         Value::Vec(ptr, size, capacity) => {
-            let ptr = resolve_types_value(*ptr, function, globals, lexer)?;
-            let size = resolve_types_value(*size, function, globals, lexer)?;
-            let capacity = resolve_types_value(*capacity, function, globals, lexer)?;
-
-            let element_type = type_of(&ptr, function, globals).all_elements_type().clone();
-            let vec_type = Type::Vec(Box::from(element_type.clone()));
-            let underlying_type = vec_underlying_type(element_type.clone());
-            let ptr_type = Type::Ptr(Box::from(element_type.clone()));
-
-            let with_ptr_var = function.new_var(vec_type.clone());
-            function.add_instruction(Instruction::InsertValue(
-                make_undefined(globals),
-                underlying_type.clone(),
-                ptr,
-                ptr_type,
-                0,
-                with_ptr_var,
-            ));
-
-            let with_size_var = function.new_var(vec_type.clone());
-            function.add_instruction(Instruction::InsertValue(
-                Value::Variable(with_ptr_var),
-                underlying_type.clone(),
-                size,
-                Type::Int,
-                1,
-                with_size_var,
-            ));
-
-            let result_var = function.new_var(vec_type);
-            function.add_instruction(Instruction::InsertValue(
-                Value::Variable(with_size_var),
-                underlying_type,
-                capacity,
-                Type::Int,
-                2,
-                result_var,
-            ));
-
-            Value::Variable(result_var)
+            let ptr_type = type_of(&ptr, function, globals);
+            resolve_types_value(
+                Value::Tuple(
+                    Vec::from([*ptr, *size, *capacity]),
+                    Vec::from([ptr_type, Type::Int, Type::Int]),
+                ),
+                function,
+                globals,
+                lexer,
+            )?
         }
         Value::Type(type_) => Value::Type(resolve_actual_type(&type_, globals, lexer)?),
         Value::Zeroed(ref type_, location) => {
@@ -404,8 +355,8 @@ fn resolve_types_value(
             value
         }
         Value::Length(value, location) => {
+            let type_ = resolve_actual_type(&type_of(&value, function, globals), globals, lexer)?;
             let value = resolve_types_value(*value, function, globals, lexer)?;
-            let type_ = type_of(&value, function, globals);
             match type_ {
                 Type::Tuple(types) => Value::IntLiteral(types.len() as i64),
                 Type::Array(_, size) => Value::IntLiteral(size),
@@ -733,11 +684,11 @@ fn resolve_print(
     Result::Ok(())
 }
 
-fn has_destructor(type_: Type) -> bool {
+fn has_destructor(type_: &Type) -> bool {
     match type_ {
         Type::Ptr(_) | Type::Vec(_) => true,
-        Type::Tuple(types) => types.into_iter().any(has_destructor),
-        Type::Array(element_type, _) => has_destructor(*element_type),
+        Type::Tuple(types) => types.iter().any(has_destructor),
+        Type::Array(element_type, _) => has_destructor(element_type.as_ref()),
         Type::TypVar(_) => panic!("type var should be resolved before calling this"),
         _ => false,
     }
@@ -929,79 +880,10 @@ fn resolve_types_instruction(
     globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<(), String> {
-    match instruction {
+    match instruction.resolve_types(function, globals, lexer)? {
         Instruction::Bogus => panic!("bogus instruction got to type resolution"),
-        Instruction::Arithemtic(op, lhs, rhs, result_var) => {
-            let lhs = resolve_types_value(lhs, function, globals, lexer)?;
-            let rhs = resolve_types_value(rhs, function, globals, lexer)?;
-            function.add_instruction(Instruction::Arithemtic(op, lhs, rhs, result_var))
-        }
-        Instruction::Relational(op, lhs, rhs, result_var) => {
-            let lhs = resolve_types_value(lhs, function, globals, lexer)?;
-            let rhs = resolve_types_value(rhs, function, globals, lexer)?;
-            function.add_instruction(Instruction::Relational(op, lhs, rhs, result_var))
-        }
-        Instruction::Relational32(op, lhs, rhs, result_var) => {
-            let lhs = resolve_types_value(lhs, function, globals, lexer)?;
-            let rhs = resolve_types_value(rhs, function, globals, lexer)?;
-            function.add_instruction(Instruction::Relational32(op, lhs, rhs, result_var))
-        }
-        Instruction::Logical(op, lhs, rhs, result_var) => {
-            let lhs = resolve_types_value(lhs, function, globals, lexer)?;
-            let rhs = resolve_types_value(rhs, function, globals, lexer)?;
-            function.add_instruction(Instruction::Logical(op, lhs, rhs, result_var))
-        }
-        Instruction::Not(value, result_var) => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Not(value, result_var))
-        }
-        Instruction::Alloca(type_, result_var) => function.add_instruction(Instruction::Alloca(
-            resolve_actual_type(&type_, globals, lexer)?,
-            result_var,
-        )),
-        Instruction::AllocaN(type_, value, result_var) => {
-            let type_ = resolve_actual_type(&type_, globals, lexer)?;
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::AllocaN(type_, value, result_var));
-        }
-        Instruction::Load(ptr, type_, result_var) => {
-            let ptr = resolve_types_value(ptr, function, globals, lexer)?;
-            function.add_instruction(Instruction::Load(
-                ptr,
-                resolve_actual_type(&type_, globals, lexer)?,
-                result_var,
-            ))
-        }
-        Instruction::Store(ptr, type_, value) => {
-            let ptr = resolve_types_value(ptr, function, globals, lexer)?;
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Store(
-                ptr,
-                resolve_actual_type(&type_, globals, lexer)?,
-                value,
-            ))
-        }
-        Instruction::Memcopy(from, to, size) => {
-            let from = resolve_types_value(from, function, globals, lexer)?;
-            let to = resolve_types_value(to, function, globals, lexer)?;
-            let size = resolve_types_value(size, function, globals, lexer)?;
-            function.add_instruction(Instruction::Memcopy(from, to, size));
-        }
-        Instruction::Malloc(size, result_var) => {
-            let size = resolve_types_value(size, function, globals, lexer)?;
-            function.add_instruction(Instruction::Malloc(size, result_var));
-        }
-        Instruction::Realloc(ptr, size, result_var) => {
-            let ptr = resolve_types_value(ptr, function, globals, lexer)?;
-            let size = resolve_types_value(size, function, globals, lexer)?;
-            function.add_instruction(Instruction::Realloc(ptr, size, result_var));
-        }
-        Instruction::Free(ptr) => {
-            let ptr = resolve_types_value(ptr, function, globals, lexer)?;
-            function.add_instruction(Instruction::Free(ptr));
-        }
         Instruction::CheckNoDestructor(type_, location) => {
-            if has_destructor(resolve_actual_type(&type_, globals, lexer)?) {
+            if has_destructor(&type_) {
                 return Result::Err(lexer.make_error_report(
                     location,
                     &format!(
@@ -1012,12 +894,7 @@ fn resolve_types_instruction(
             }
         }
         Instruction::Clone(value, type_, result_var, location) => {
-            if !resolve_clone(
-                resolve_types_value(value, function, globals, lexer)?,
-                type_.clone(),
-                result_var,
-                function,
-            )? {
+            if !resolve_clone(value, type_.clone(), result_var, function)? {
                 return Result::Err(lexer.make_error_report(
                     location,
                     &format!(
@@ -1028,11 +905,7 @@ fn resolve_types_instruction(
             }
         }
         Instruction::Destroy(value, type_, location) => {
-            if !resolve_destroy(
-                resolve_types_value(value, function, globals, lexer)?,
-                type_.clone(),
-                function,
-            ) {
+            if !resolve_destroy(value, type_.clone(), function) {
                 return Result::Err(lexer.make_error_report(
                     location,
                     &format!(
@@ -1042,34 +915,7 @@ fn resolve_types_instruction(
                 ));
             }
         }
-        Instruction::InsertValue(tuple, tuple_type, value, value_type, index, result_var) => {
-            let tuple = resolve_types_value(tuple, function, globals, lexer)?;
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::InsertValue(
-                tuple,
-                resolve_actual_type(&tuple_type, globals, lexer)?,
-                value,
-                resolve_actual_type(&value_type, globals, lexer)?,
-                index,
-                result_var,
-            ))
-        }
-        Instruction::ExtractValue(tuple, tuple_type, value_type, index, result_var) => {
-            let tuple = resolve_types_value(tuple, function, globals, lexer)?;
-            function.add_instruction(Instruction::ExtractValue(
-                tuple,
-                resolve_actual_type(&tuple_type, globals, lexer)?,
-                resolve_actual_type(&value_type, globals, lexer)?,
-                index,
-                result_var,
-            ))
-        }
         Instruction::InsertValueDyn(tuple, tuple_type, value, value_type, index, result_var) => {
-            let tuple = resolve_types_value(tuple, function, globals, lexer)?;
-            let tuple_type = resolve_actual_type(&tuple_type, globals, lexer)?;
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            let value_type = resolve_actual_type(&value_type, globals, lexer)?;
-
             let ptr_var = function.new_var(Type::Ref(Box::from(tuple_type.clone())));
             function.add_instruction(Instruction::Alloca(tuple_type.clone(), ptr_var));
             function.add_instruction(Instruction::Store(
@@ -1105,10 +951,6 @@ fn resolve_types_instruction(
             ));
         }
         Instruction::ExtractValueDyn(tuple, tuple_type, value_type, index, result_var) => {
-            let tuple = resolve_types_value(tuple, function, globals, lexer)?;
-            let tuple_type = resolve_actual_type(&tuple_type, globals, lexer)?;
-            let value_type = resolve_actual_type(&value_type, globals, lexer)?;
-
             let ptr_var = function.new_var(Type::Ref(Box::from(tuple_type.clone())));
             function.add_instruction(Instruction::Alloca(tuple_type.clone(), ptr_var));
             function.add_instruction(Instruction::Store(
@@ -1137,24 +979,8 @@ fn resolve_types_instruction(
                 result_var,
             ));
         }
-        Instruction::GetElementPtr(type_, value, index, result_var) => {
-            let type_ = resolve_actual_type(&type_, globals, lexer)?;
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            let index = resolve_types_value(index, function, globals, lexer)?;
-            function.add_instruction(Instruction::GetElementPtr(type_, value, index, result_var));
-        }
-        Instruction::GetNeighbourPtr(type_, value, index, result_var) => {
-            let type_ = resolve_actual_type(&type_, globals, lexer)?;
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            let index = resolve_types_value(index, function, globals, lexer)?;
-            function.add_instruction(Instruction::GetNeighbourPtr(
-                type_, value, index, result_var,
-            ));
-        }
         Instruction::GetField(struct_value, fields, field_type, field_name, result_var) => {
-            let struct_value = resolve_types_value(struct_value, function, globals, lexer)?;
             let fields = resolve_actual_fields(fields, globals, lexer)?;
-            let field_type = resolve_actual_type(&field_type, globals, lexer)?;
 
             let underlying_type = struct_underlying_type(fields.clone());
             let field_index = field_index(fields, &field_name)?;
@@ -1175,10 +1001,7 @@ fn resolve_types_instruction(
             field_name,
             result_var,
         ) => {
-            let struct_value = resolve_types_value(struct_value, function, globals, lexer)?;
             let fields = resolve_actual_fields(fields, globals, lexer)?;
-            let field_value = resolve_types_value(field_value, function, globals, lexer)?;
-            let field_type = resolve_actual_type(&field_type, globals, lexer)?;
 
             let underlying_type = struct_underlying_type(fields.clone());
             let field_index = field_index(fields, &field_name)?;
@@ -1193,7 +1016,6 @@ fn resolve_types_instruction(
             ));
         }
         Instruction::GetFieldPtr(ptr_value, fields, _, field_name, result_var) => {
-            let ptr_value = resolve_types_value(ptr_value, function, globals, lexer)?;
             let fields = resolve_actual_fields(fields, globals, lexer)?;
 
             let underlying_type = struct_underlying_type(fields.clone());
@@ -1206,22 +1028,8 @@ fn resolve_types_instruction(
                 result_var,
             ));
         }
-        Instruction::Bitcast(value, from, to, result_var) => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Bitcast(
-                value,
-                resolve_actual_type(&from, globals, lexer)?,
-                resolve_actual_type(&to, globals, lexer)?,
-                result_var,
-            ));
-        }
         Instruction::Print(value, type_) => resolve_print(value, type_, function, globals, lexer)?,
-        Instruction::Putstr(value) => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Putstr(value))
-        }
         Instruction::Printf(fmt_string, args) => {
-            let fmt_string = resolve_types_value(fmt_string, function, globals, lexer)?;
             let args = args
                 .into_iter()
                 .map(|arg| resolve_types_value(arg, function, globals, lexer))
@@ -1231,22 +1039,7 @@ fn resolve_types_instruction(
         Instruction::Input(result_var, type_, location) => {
             resolve_input(type_, result_var, location, function, globals, lexer)?
         }
-        Instruction::GetsS(buf, size, result_var) => {
-            let buf = resolve_types_value(buf, function, globals, lexer)?;
-            let size = resolve_types_value(size, function, globals, lexer)?;
-            function.add_instruction(Instruction::GetsS(buf, size, result_var))
-        }
-        Instruction::Strcmp(lhs, rhs, result_var) => {
-            let lhs = resolve_types_value(lhs, function, globals, lexer)?;
-            let rhs = resolve_types_value(rhs, function, globals, lexer)?;
-            function.add_instruction(Instruction::Strcmp(lhs, rhs, result_var))
-        }
-        Instruction::Exit(value) => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Exit(value))
-        }
         Instruction::Call(fn_ptr, arg_types, arg_values, result_types, result_vars) => {
-            let fn_ptr = resolve_types_value(fn_ptr, function, globals, lexer)?;
             let mut new_arg_types = Vec::with_capacity(arg_types.len());
             for arg_type in arg_types {
                 new_arg_types.push(resolve_actual_type(&arg_type, globals, lexer)?);
@@ -1285,7 +1078,7 @@ fn resolve_types_instruction(
             }
 
             let instruction = Instruction::If(
-                resolve_types_value(condition, function, globals, lexer)?,
+                condition,
                 resolve_types_scope(&then_scope, function, globals, lexer)?,
                 resolve_types_scope(&else_scope, function, globals, lexer)?,
                 new_phis,
@@ -1313,11 +1106,12 @@ fn resolve_types_instruction(
             let instruction = Instruction::While(
                 new_phis,
                 resolve_types_scope(&test_scope, function, globals, lexer)?,
-                resolve_types_value(test, function, globals, lexer)?,
+                test,
                 resolve_types_scope(&body_scope, function, globals, lexer)?,
             );
             function.add_instruction(instruction);
         }
+        other_instruction => function.add_instruction(other_instruction),
     };
     Result::Ok(())
 }
