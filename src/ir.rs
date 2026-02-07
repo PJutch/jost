@@ -319,24 +319,36 @@ impl Function {
         display_type_list(&types, globals)
     }
 
+    pub fn peek_of_type(
+        &mut self,
+        type_: &Type,
+        globals: &mut Globals,
+        offset_from_top: i64,
+    ) -> Option<Value> {
+        if let Some(value) = self.nth_from_top(offset_from_top, globals) {
+            if merge_types(&type_of(&value, self, globals), type_, globals) {
+                return Option::Some(value);
+            }
+        }
+        Option::None
+    }
+
     pub fn pop_of_type(
         &mut self,
-        type_: Type,
+        type_: &Type,
         globals: &mut Globals,
         location: Location,
         lexer: &Lexer,
     ) -> Result<Value, String> {
-        if let Some(value) = self.nth_from_top(0, globals) {
-            if merge_types(&type_of(&value, self, globals), &type_, globals) {
-                return Result::Ok(self.pop(globals).expect("stack is checked to not be empty"));
-            }
+        if self.peek_of_type(type_, globals, 0).is_some() {
+            return Result::Ok(self.pop(globals).expect("stack is checked to not be empty"));
         }
 
         Result::Err(lexer.make_error_report(
             location,
             &format!(
                 "expected ... {}, found {}",
-                display_type(&type_, globals),
+                display_type(type_, globals),
                 self.stack_as_string(globals)
             ),
         ))
@@ -350,20 +362,16 @@ impl Function {
         location: Location,
         lexer: &Lexer,
     ) -> Result<(Value, Value), String> {
-        if let Some(value1) = self.nth_from_top(1, globals) {
-            if let Some(value2) = self.nth_from_top(0, globals) {
-                if merge_types(&type_of(&value1, self, globals), &type1, globals)
-                    && merge_types(&type_of(&value2, self, globals), &type2, globals)
-                {
-                    let value2 = self
-                        .pop(globals)
-                        .expect("stack is checked to have 2 values");
-                    let value1 = self
-                        .pop(globals)
-                        .expect("stack is checked to have 2 values");
-                    return Result::Ok((value1, value2));
-                }
-            }
+        if self.peek_of_type(&type1, globals, 1).is_some()
+            && self.peek_of_type(&type2, globals, 0).is_some()
+        {
+            let value2 = self
+                .pop(globals)
+                .expect("stack is checked to have 2 values");
+            let value1 = self
+                .pop(globals)
+                .expect("stack is checked to have 2 values");
+            return Result::Ok((value1, value2));
         }
 
         Result::Err(lexer.make_error_report(
@@ -444,6 +452,22 @@ impl Function {
                 self.stack_as_string(globals)
             ),
         ))
+    }
+
+    pub fn peek_n_of_types(
+        &mut self,
+        types: &[Type],
+        globals: &Globals,
+        offset_from_top: i64,
+    ) -> Option<Vec<Value>> {
+        types
+            .iter()
+            .enumerate()
+            .map(|(i, arg_type)| {
+                self.nth_from_top(offset_from_top + (types.len() - i - 1) as i64, globals)
+                    .filter(|value| type_of(value, self, globals) == *arg_type)
+            })
+            .collect()
     }
 
     pub fn pop_signature(

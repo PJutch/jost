@@ -1,10 +1,7 @@
 use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
-use crate::types::should_be_ptr;
-use crate::types::should_be_ref;
 use crate::types::should_be_struct;
-use crate::types::should_be_vec;
 use crate::types::slice_underlying_type;
 use crate::types::type_of;
 
@@ -87,22 +84,14 @@ fn compile_call(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Type::FnPtr(arg_types, result_types) = type_of(&called_value, current_function, globals)
-    {
-        if arg_types.iter().enumerate().all(|(i, arg_type)| {
-            current_function
-                .nth_from_top((arg_types.len() - i - 1) as i64, globals)
-                .is_some_and(|value| type_of(&value, current_function, globals) == *arg_type)
-        }) {
-            let mut args = Vec::new();
-            for _ in 0..arg_types.len() {
-                args.push(
-                    current_function
-                        .pop(globals)
-                        .expect("stack len is checked above"),
-                );
+    let fn_type = type_of(&called_value, current_function, globals);
+    if let Type::FnPtr(arg_types, result_types) = resolve_type(&fn_type, globals) {
+        if let Some(args) = current_function.peek_n_of_types(&arg_types, globals, 0) {
+            for _ in &args {
+                current_function
+                    .pop(globals)
+                    .expect("stack is checked above");
             }
-            args.reverse();
 
             let mut results = Vec::new();
             for result_type in &result_types {
@@ -132,10 +121,7 @@ fn compile_call(
     } else {
         Result::Err(lexer.make_error_report(
             location,
-            &format!(
-                "expected ... fn, found {}",
-                current_function.stack_as_string(globals)
-            ),
+            &format!("expected fn, found {}", display_type(&fn_type, globals)),
         ))
     }
 }
@@ -146,30 +132,22 @@ fn do_type_assertion(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(value) = function.nth_from_top(1, globals) {
-        if let Some(Value::Type(type_)) = function.pop(globals) {
-            return if merge_types(&type_of(&value, function, globals), &type_, globals) {
-                Result::Ok(())
-            } else {
-                Result::Err(lexer.make_error_report(
-                    location,
-                    &format!(
-                        "expected ... {}, found {}",
-                        display_type(&type_, globals),
-                        function.stack_as_string(globals)
-                    ),
-                ))
-            };
+    if let Value::Type(type_) = function.pop_of_type(&Type::Typ, globals, location, lexer)? {
+        if function.peek_of_type(&type_, globals, 0).is_some() {
+            Result::Ok(())
+        } else {
+            Result::Err(lexer.make_error_report(
+                location,
+                &format!(
+                    "expected ... {}, found {}",
+                    display_type(&type_, globals),
+                    function.stack_as_string(globals)
+                ),
+            ))
         }
+    } else {
+        panic!("value of type Type should be a type")
     }
-
-    Result::Err(lexer.make_error_report(
-        location,
-        &format!(
-            "expected ... value Type, found {}",
-            function.stack_as_string(globals)
-        ),
-    ))
 }
 
 fn compile_normal_block(
@@ -191,7 +169,7 @@ fn compile_if(
     globals: &mut Globals,
     location: Location,
 ) -> Result<(), String> {
-    let condition = function.pop_of_type(Type::Bool, globals, location, lexer)?;
+    let condition = function.pop_of_type(&Type::Bool, globals, location, lexer)?;
 
     let mut then_scope = compile_normal_block(false, lexer, function, globals)?;
 
@@ -342,7 +320,7 @@ fn compile_while(
     compile_block(lexer, function, globals, false)?;
 
     let test = function.pop_of_type(
-        Type::Bool,
+        &Type::Bool,
         globals,
         Location::char_at(function.scopes.last().expect("scope was created above").end),
         lexer,
@@ -489,12 +467,10 @@ fn compile_store(
 ) -> Result<(), String> {
     if let Some(ptr) = function.nth_from_top(1, globals) {
         if let Type::Ref(value_type) | Type::Ptr(value_type) = type_of(&ptr, function, globals) {
-            if let Some(value) = function.nth_from_top(0, globals) {
-                if merge_types(&type_of(&value, function, globals), &value_type, globals) {
-                    function.pop(globals).expect("stack is checked above");
-                    function.add_instruction(Instruction::Store(ptr, *value_type, value));
-                    return Result::Ok(());
-                }
+            if let Some(value) = function.peek_of_type(&value_type, globals, 0) {
+                function.pop(globals).expect("stack is checked above");
+                function.add_instruction(Instruction::Store(ptr, *value_type, value));
+                return Result::Ok(());
             }
         }
     }
@@ -649,67 +625,61 @@ fn compile_set_at(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(container) = function.nth_from_top(2, globals) {
+    if let Result::Ok([container, value, index]) =
+        function.pop3_of_any_type(globals, location, lexer)
+    {
         let container_type = type_of(&container, function, globals);
-        if let Some(value) = function.nth_from_top(1, globals) {
-            let value_type = type_of(&value, function, globals);
-            if let Some(index) = function.nth_from_top(0, globals) {
-                function.pop(globals).expect("stack is checked above");
-                function.pop(globals).expect("stack is checked above");
-                function.pop(globals).expect("stack is checked above");
+        let value_type = type_of(&value, function, globals);
 
-                if let Value::IntLiteral(index) = index {
-                    let element_type =
-                        container_type.index_type_statically(index, globals, lexer, location)?;
-                    if merge_types(&value_type, element_type, globals) {
-                        let result_var = function.new_var(container_type.clone());
-                        function.push(Value::Variable(result_var));
-                        function.add_instruction(Instruction::InsertValue(
-                            container,
-                            container_type.clone(),
-                            value,
-                            value_type.clone(),
-                            index,
-                            result_var,
-                        ));
-                    } else {
-                        return Result::Err(lexer.make_error_report(
-                            location,
-                            &format!(
-                                "element type is {}, but trying to put there {}",
-                                display_type(element_type, globals),
-                                display_type(&value_type, globals)
-                            ),
-                        ));
-                    }
-                } else {
-                    let element_type =
-                        container_type.index_type_dinamically(globals, lexer, location)?;
-                    if merge_types(&value_type, element_type, globals) {
-                        let result_var = function.new_var(container_type.clone());
-                        function.push(Value::Variable(result_var));
-                        function.add_instruction(Instruction::InsertValueDyn(
-                            container,
-                            container_type.clone(),
-                            value,
-                            value_type.clone(),
-                            index,
-                            result_var,
-                        ));
-                    } else {
-                        return Result::Err(lexer.make_error_report(
-                            location,
-                            &format!(
-                                "element type is {}, but trying to put there {}",
-                                display_type(element_type, globals),
-                                display_type(&value_type, globals)
-                            ),
-                        ));
-                    }
-                }
-                return Result::Ok(());
+        if let Value::IntLiteral(index) = index {
+            let element_type =
+                container_type.index_type_statically(index, globals, lexer, location)?;
+            if merge_types(&value_type, element_type, globals) {
+                let result_var = function.new_var(container_type.clone());
+                function.push(Value::Variable(result_var));
+                function.add_instruction(Instruction::InsertValue(
+                    container,
+                    container_type.clone(),
+                    value,
+                    value_type.clone(),
+                    index,
+                    result_var,
+                ));
+            } else {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!(
+                        "element type is {}, but trying to put there {}",
+                        display_type(element_type, globals),
+                        display_type(&value_type, globals)
+                    ),
+                ));
+            }
+        } else {
+            let element_type = container_type.index_type_dinamically(globals, lexer, location)?;
+            if merge_types(&value_type, element_type, globals) {
+                let result_var = function.new_var(container_type.clone());
+                function.push(Value::Variable(result_var));
+                function.add_instruction(Instruction::InsertValueDyn(
+                    container,
+                    container_type.clone(),
+                    value,
+                    value_type.clone(),
+                    index,
+                    result_var,
+                ));
+            } else {
+                return Result::Err(lexer.make_error_report(
+                    location,
+                    &format!(
+                        "element type is {}, but trying to put there {}",
+                        display_type(element_type, globals),
+                        display_type(&value_type, globals)
+                    ),
+                ));
             }
         }
+        return Result::Ok(());
     }
 
     Result::Err(lexer.make_error_report(
@@ -964,34 +934,32 @@ fn compile_vec_append(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(vec) = function.nth_from_top(1, globals) {
+    let element_type = Type::TypVar(globals.new_type_var(location));
+    if let Result::Ok((vec, value)) = function.pop2_of_type(
+        Type::Vec(Box::new(element_type.clone())),
+        element_type.clone(),
+        globals,
+        location,
+        lexer,
+    ) {
         let vec_type = type_of(&vec, function, globals);
-        if let Type::Vec(element_type) = &vec_type {
-            if let Some(value) = function.nth_from_top(0, globals) {
-                if merge_types(&type_of(&value, function, globals), element_type, globals) {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
+        let result_var = compile_vec_append_impl(
+            vec,
+            vec_type.clone(),
+            value,
+            element_type.clone(),
+            function,
+            location,
+        );
+        function.push(Value::Variable(result_var));
 
-                    let result_var = compile_vec_append_impl(
-                        vec,
-                        vec_type.clone(),
-                        value,
-                        element_type.deref().clone(),
-                        function,
-                        location,
-                    );
-                    function.push(Value::Variable(result_var));
-
-                    return Result::Ok(());
-                }
-            }
-        }
+        return Result::Ok(());
     }
 
     Result::Err(lexer.make_error_report(
         location,
         &format!(
-            "expected A Vec A, found {}",
+            "expected Vec A A, found {}",
             function.stack_as_string(globals)
         ),
     ))
@@ -1003,55 +971,44 @@ fn compile_remove_back(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(vec) = function.nth_from_top(0, globals) {
-        let vec_type = type_of(&vec, function, globals);
-        if let Some(element_type) = should_be_vec(vec_type.clone(), globals) {
-            function.pop(globals).expect("stack is checked above");
+    let element_type = Type::TypVar(globals.new_type_var(location));
+    let vec_type = Type::Vec(Box::new(element_type.clone()));
+    let vec = function.pop_of_type(&vec_type, globals, location, lexer)?;
 
-            let new_len_var = compile_arithmetic(
-                Arithemtic::Sub,
-                Value::Length(Box::from(vec.clone()), location),
-                Value::IntLiteral(1),
-                function,
-            );
+    let new_len_var = compile_arithmetic(
+        Arithemtic::Sub,
+        Value::Length(Box::from(vec.clone()), location),
+        Value::IntLiteral(1),
+        function,
+    );
 
-            let new_vec_var = function.new_var(vec_type);
-            function.add_instruction(Instruction::InsertValue(
-                vec.clone(),
-                vec_underlying_type(element_type.clone()),
-                Value::Variable(new_len_var),
-                Type::Int,
-                1,
-                new_vec_var,
-            ));
-            function.push(Value::Variable(new_vec_var));
+    let new_vec_var = function.new_var(vec_type);
+    function.add_instruction(Instruction::InsertValue(
+        vec.clone(),
+        vec_underlying_type(element_type.clone()),
+        Value::Variable(new_len_var),
+        Type::Int,
+        1,
+        new_vec_var,
+    ));
+    function.push(Value::Variable(new_vec_var));
 
-            let element_ptr_var = compile_vec_refat(
-                vec,
-                Value::Variable(new_len_var),
-                element_type.clone(),
-                function,
-            );
+    let element_ptr_var = compile_vec_refat(
+        vec,
+        Value::Variable(new_len_var),
+        element_type.clone(),
+        function,
+    );
 
-            let element_var = function.new_var(element_type.clone());
-            function.add_instruction(Instruction::Load(
-                Value::Variable(element_ptr_var),
-                element_type,
-                element_var,
-            ));
-            function.push(Value::Variable(element_var));
+    let element_var = function.new_var(element_type.clone());
+    function.add_instruction(Instruction::Load(
+        Value::Variable(element_ptr_var),
+        element_type,
+        element_var,
+    ));
+    function.push(Value::Variable(element_var));
 
-            return Result::Ok(());
-        }
-    }
-
-    Result::Err(lexer.make_error_report(
-        location,
-        &format!(
-            "expected Vec A, found {}",
-            function.stack_as_string(globals)
-        ),
-    ))
+    Result::Ok(())
 }
 
 fn compile_concat(
@@ -1060,96 +1017,80 @@ fn compile_concat(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(append_to) = function.nth_from_top(1, globals) {
-        if let Some(append_from) = function.nth_from_top(0, globals) {
-            if let Some(element_type) =
-                should_be_vec(type_of(&append_to, function, globals), globals)
-            {
-                if merge_types(
-                    &type_of(&append_from, function, globals),
-                    &Type::Vec(Box::from(element_type.clone())),
-                    globals,
-                ) {
-                    let vec_type = Type::Vec(Box::from(element_type.clone()));
-                    let append_to_var = function.new_var(vec_type.clone());
-                    let counter_var = function.new_var(Type::Int);
+    let element_type = Type::TypVar(globals.new_type_var(location));
+    let vec_type = Type::Vec(Box::new(element_type.clone()));
+    let (append_to, append_from) =
+        function.pop2_of_type(vec_type.clone(), vec_type.clone(), globals, location, lexer)?;
 
-                    function.new_scope(true);
-                    let condition_var = compile_relational(
-                        Relational::Eq,
-                        Value::Variable(counter_var),
-                        Value::Length(Box::from(append_from.clone()), location),
-                        function,
-                    );
+    let append_to_var = function.new_var(vec_type.clone());
+    let counter_var = function.new_var(Type::Int);
 
-                    function.new_scope(false);
+    function.new_scope(true);
+    let condition_var = compile_relational(
+        Relational::Eq,
+        Value::Variable(counter_var),
+        Value::Length(Box::from(append_from.clone()), location),
+        function,
+    );
 
-                    let ptr_var = compile_vec_refat(
-                        append_from,
-                        Value::Variable(counter_var),
-                        element_type.clone(),
-                        function,
-                    );
+    function.new_scope(false);
 
-                    let element_var = function.new_var(element_type.clone());
-                    function.add_instruction(Instruction::Load(
-                        Value::Variable(ptr_var),
-                        element_type.clone(),
-                        element_var,
-                    ));
+    let ptr_var = compile_vec_refat(
+        append_from,
+        Value::Variable(counter_var),
+        element_type.clone(),
+        function,
+    );
 
-                    let new_append_to_var = compile_vec_append_impl(
-                        Value::Variable(append_to_var),
-                        vec_type.clone(),
-                        Value::Variable(element_var),
-                        element_type,
-                        function,
-                        location,
-                    );
+    let element_var = function.new_var(element_type.clone());
+    function.add_instruction(Instruction::Load(
+        Value::Variable(ptr_var),
+        element_type.clone(),
+        element_var,
+    ));
 
-                    let new_counter_var = compile_arithmetic(
-                        Arithemtic::Add,
-                        Value::Variable(counter_var),
-                        Value::IntLiteral(1),
-                        function,
-                    );
-
-                    let body_scope = function.scopes.pop().expect("scope was created above");
-                    let test_scope = function.scopes.pop().expect("scope was created above");
-
-                    function.add_instruction(Instruction::While(
-                        Vec::from([
-                            Phi {
-                                result_type: vec_type,
-                                case1: append_to,
-                                case2: Value::Variable(new_append_to_var),
-                                result_var: append_to_var,
-                            },
-                            Phi {
-                                result_type: Type::Int,
-                                case1: Value::IntLiteral(0),
-                                case2: Value::Variable(new_counter_var),
-                                result_var: counter_var,
-                            },
-                        ]),
-                        test_scope,
-                        Value::Variable(condition_var),
-                        body_scope,
-                    ));
-
-                    return Result::Ok(());
-                }
-            }
-        }
-    }
-
-    Result::Err(lexer.make_error_report(
+    let new_append_to_var = compile_vec_append_impl(
+        Value::Variable(append_to_var),
+        vec_type.clone(),
+        Value::Variable(element_var),
+        element_type,
+        function,
         location,
-        &format!(
-            "expected A Vec A Vec, found {}",
-            function.stack_as_string(globals)
-        ),
-    ))
+    );
+
+    let new_counter_var = compile_arithmetic(
+        Arithemtic::Add,
+        Value::Variable(counter_var),
+        Value::IntLiteral(1),
+        function,
+    );
+
+    let body_scope = function.scopes.pop().expect("scope was created above");
+    let test_scope = function.scopes.pop().expect("scope was created above");
+
+    function.add_instruction(Instruction::While(
+        Vec::from([
+            Phi {
+                result_type: vec_type,
+                case1: append_to,
+                case2: Value::Variable(new_append_to_var),
+                result_var: append_to_var,
+            },
+            Phi {
+                result_type: Type::Int,
+                case1: Value::IntLiteral(0),
+                case2: Value::Variable(new_counter_var),
+                result_var: counter_var,
+            },
+        ]),
+        test_scope,
+        Value::Variable(condition_var),
+        body_scope,
+    ));
+
+    function.push(Value::Variable(append_to_var));
+
+    Result::Ok(())
 }
 
 fn compile_slice_from_parts(
@@ -1158,28 +1099,16 @@ fn compile_slice_from_parts(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(ptr) = function.nth_from_top(1, globals) {
-        if should_be_ref(type_of(&ptr, function, globals), globals).is_some() {
-            if let Some(size) = function.nth_from_top(0, globals) {
-                if merge_types(&type_of(&size, function, globals), &Type::Int, globals) {
-                    function.pop(globals).expect("stack is checked above");
-                    function.pop(globals).expect("stack is checked above");
-
-                    function.push(Value::Slice(Box::from(ptr), Box::from(size)));
-
-                    return Result::Ok(());
-                }
-            }
-        }
-    }
-
-    Result::Err(lexer.make_error_report(
+    let element_type = Type::TypVar(globals.new_type_var(location));
+    let (reference, size) = function.pop2_of_type(
+        Type::Ref(Box::new(element_type)),
+        Type::Int,
+        globals,
         location,
-        &format!(
-            "expected A Ref Int, found {}",
-            function.stack_as_string(globals)
-        ),
-    ))
+        lexer,
+    )?;
+    function.push(Value::Slice(Box::from(reference), Box::from(size)));
+    Result::Ok(())
 }
 
 fn compile_to_slice(
@@ -1500,21 +1429,10 @@ fn compile_free(
     lexer: &Lexer,
     location: Location,
 ) -> Result<(), String> {
-    if let Some(ptr) = function.nth_from_top(0, globals) {
-        if should_be_ptr(type_of(&ptr, function, globals), globals).is_some() {
-            function.pop(globals).expect("stack is checked above");
-            function.add_instruction(Instruction::Free(ptr));
-            return Result::Ok(());
-        }
-    }
-
-    Result::Err(lexer.make_error_report(
-        location,
-        &format!(
-            "expected A Ptr,  found {}",
-            function.stack_as_string(globals)
-        ),
-    ))
+    let element_type = Type::TypVar(globals.new_type_var(location));
+    let ptr = function.pop_of_type(&Type::Ptr(Box::new(element_type)), globals, location, lexer)?;
+    function.add_instruction(Instruction::Free(ptr));
+    Result::Ok(())
 }
 
 fn compile_field(
@@ -1716,7 +1634,7 @@ fn compile_block(
                 function.push(Value::Variable(result_var));
             }
             Word::Id("!") => {
-                let value = function.pop_of_type(Type::Bool, globals, location, lexer)?;
+                let value = function.pop_of_type(&Type::Bool, globals, location, lexer)?;
 
                 let result_var = function.new_var(Type::Bool);
                 function.push(Value::Variable(result_var));
@@ -1887,7 +1805,7 @@ fn compile_block(
             }
             Word::Id("Ptr") => {
                 let type_ = function
-                    .pop_of_type(Type::Typ, globals, location, lexer)?
+                    .pop_of_type(&Type::Typ, globals, location, lexer)?
                     .unwrap_type();
                 function.push(Value::Type(Type::Ptr(Box::from(type_))));
             }
@@ -1907,7 +1825,7 @@ fn compile_block(
                 function.push(Value::Variable(result_var));
             }
             Word::Id("alloca_n") => {
-                let count = function.pop_of_type(Type::Int, globals, location, lexer)?;
+                let count = function.pop_of_type(&Type::Int, globals, location, lexer)?;
                 let type_ = Type::TypVar(globals.new_type_var(location));
 
                 let ref_var = function.new_var(Type::Ref(Box::from(type_.clone())));

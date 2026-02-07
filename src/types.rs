@@ -1464,48 +1464,6 @@ pub fn merge_type_lists(types1: &[Type], types2: &[Type], globals: &mut Globals)
     }
 }
 
-pub fn should_be_ref(type_: Type, globals: &mut Globals) -> Option<Type> {
-    match resolve_type(&type_, globals) {
-        Type::Ref(value_type) => Option::Some(*value_type),
-        Type::TypVar(index) => {
-            let value_type = Type::TypVar(globals.new_type_var(globals.type_var_locations[&index]));
-            globals
-                .type_vars
-                .insert(index, Type::Ref(Box::from(value_type.clone())));
-            Option::Some(value_type)
-        }
-        _ => Option::None,
-    }
-}
-
-pub fn should_be_ptr(type_: Type, globals: &mut Globals) -> Option<Type> {
-    match resolve_type(&type_, globals) {
-        Type::Ptr(value_type) => Option::Some(*value_type),
-        Type::TypVar(index) => {
-            let value_type = Type::TypVar(globals.new_type_var(globals.type_var_locations[&index]));
-            globals
-                .type_vars
-                .insert(index, Type::Ptr(Box::from(value_type.clone())));
-            Option::Some(value_type)
-        }
-        _ => Option::None,
-    }
-}
-
-pub fn should_be_vec(type_: Type, globals: &mut Globals) -> Option<Type> {
-    match resolve_type(&type_, globals) {
-        Type::Vec(value_type) => Option::Some(*value_type),
-        Type::TypVar(index) => {
-            let value_type = Type::TypVar(globals.new_type_var(globals.type_var_locations[&index]));
-            globals
-                .type_vars
-                .insert(index, Type::Vec(Box::from(value_type.clone())));
-            Option::Some(value_type)
-        }
-        _ => Option::None,
-    }
-}
-
 pub fn should_be_struct(type_: Type, globals: &mut Globals) -> Option<Vec<(String, Type)>> {
     match resolve_type(&type_, globals) {
         Type::Struct(fields) => Option::Some(fields),
