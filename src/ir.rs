@@ -5,6 +5,8 @@ use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
 use crate::types::resolve_actual_type;
+use crate::types::resolve_types_phi;
+use crate::types::resolve_types_scope;
 use crate::types::resolve_types_value;
 use crate::types::type_of;
 use crate::types::Type;
@@ -565,7 +567,14 @@ pub struct Phi {
 }
 
 pub trait ResolveTypes {
-    fn resolve_types(self, function: &mut Function, globals: &mut Globals, lexer: &Lexer) -> Result<Self, String> where Self: Sized;
+    fn resolve_types(
+        self,
+        function: &mut Function,
+        globals: &mut Globals,
+        lexer: &Lexer,
+    ) -> Result<Self, String>
+    where
+        Self: Sized;
 }
 
 #[derive(Debug, Clone, Default, ResolveTypes)]

@@ -195,6 +195,8 @@ impl Type {
     }
 }
 
+struct Fields(Vec<(String, Type)>);
+
 pub fn slice_underlying_type(element_type: Type) -> Type {
     Type::Tuple(Vec::from([Type::Ref(Box::from(element_type)), Type::Int]))
 }
@@ -560,7 +562,7 @@ pub fn type_of(value: &Value, function: &Function, globals: &Globals) -> Type {
     }
 }
 
-fn resolve_types_phi(
+pub fn resolve_types_phi(
     phi: Phi,
     function: &mut Function,
     globals: &mut Globals,
@@ -581,30 +583,18 @@ fn resolve_print(
     globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<(), String> {
-    let type_ = resolve_actual_type(&type_, globals, lexer)?;
     match type_.clone() {
-        Type::Int => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Printf(
-                Value::Global(globals.new_string("%lld\n")),
-                [value].to_vec(),
-            ))
-        }
-        Type::Int32 => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Printf(
-                Value::Global(globals.new_string("%d\n")),
-                [value].to_vec(),
-            ))
-        }
-        Type::String => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-            function.add_instruction(Instruction::Putstr(value))
-        }
+        Type::Int => function.add_instruction(Instruction::Printf(
+            Value::Global(globals.new_string("%lld\n")),
+            [value].to_vec(),
+        )),
+        Type::Int32 => function.add_instruction(Instruction::Printf(
+            Value::Global(globals.new_string("%d\n")),
+            [value].to_vec(),
+        )),
+        Type::String => function.add_instruction(Instruction::Putstr(value)),
         Type::Bool => {
             let var = function.new_var(Type::String);
-            let value = resolve_types_value(value, function, globals, lexer)?;
-
             function.add_instruction(Instruction::If(
                 value,
                 Scope::new(false),
@@ -619,11 +609,7 @@ fn resolve_print(
             function.add_instruction(Instruction::Putstr(Value::Variable(var)));
         }
         Type::Tuple(types) => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
-
             for (i, element_type) in types.iter().enumerate() {
-                let element_type = resolve_actual_type(element_type, globals, lexer)?;
-
                 let element_var = function.new_var(element_type.clone());
                 function.add_instruction(Instruction::ExtractValue(
                     value.clone(),
@@ -643,7 +629,6 @@ fn resolve_print(
             }
         }
         Type::Array(element_type, size) => {
-            let value = resolve_types_value(value, function, globals, lexer)?;
             for i in 0..size {
                 let element_var = function.new_var(element_type.deref().clone());
                 function.add_instruction(Instruction::ExtractValue(
@@ -653,6 +638,7 @@ fn resolve_print(
                     i,
                     element_var,
                 ));
+
                 resolve_print(
                     Value::Variable(element_var),
                     element_type.deref().clone(),
@@ -671,7 +657,7 @@ fn resolve_print(
             )))
         }
         Type::Typ => {
-            if let Value::Type(type_) = resolve_types_value(value, function, globals, lexer)? {
+            if let Value::Type(type_) = value {
                 function.add_instruction(Instruction::Putstr(Value::Global(
                     globals.new_string(&display_type(&type_, globals)),
                 )));
@@ -834,7 +820,7 @@ fn resolve_input(
     globals: &mut Globals,
     lexer: &Lexer,
 ) -> Result<(), String> {
-    match resolve_actual_type(&type_, globals, lexer)? {
+    match type_ {
         Type::Int => todo!("implement input for ints"),
         Type::Int32 => todo!("implement input for int32s"),
         Type::String => function.add_instruction(Instruction::GetsS(
@@ -1030,86 +1016,10 @@ fn resolve_types_instruction(
         }
         Instruction::Print(value, type_) => resolve_print(value, type_, function, globals, lexer)?,
         Instruction::Printf(fmt_string, args) => {
-            let args = args
-                .into_iter()
-                .map(|arg| resolve_types_value(arg, function, globals, lexer))
-                .collect::<Result<Vec<Value>, String>>()?;
             function.add_instruction(Instruction::Printf(fmt_string, args))
         }
         Instruction::Input(result_var, type_, location) => {
             resolve_input(type_, result_var, location, function, globals, lexer)?
-        }
-        Instruction::Call(fn_ptr, arg_types, arg_values, result_types, result_vars) => {
-            let mut new_arg_types = Vec::with_capacity(arg_types.len());
-            for arg_type in arg_types {
-                new_arg_types.push(resolve_actual_type(&arg_type, globals, lexer)?);
-            }
-
-            let mut new_result_types = Vec::with_capacity(result_types.len());
-            for result_type in result_types {
-                new_result_types.push(resolve_actual_type(&result_type, globals, lexer)?);
-            }
-
-            function.add_instruction(Instruction::Call(
-                fn_ptr,
-                new_arg_types,
-                arg_values,
-                new_result_types,
-                result_vars,
-            ))
-        }
-        Instruction::Return(values, types) => {
-            let mut new_types = Vec::with_capacity(types.len());
-            for type_ in types {
-                new_types.push(resolve_actual_type(&type_, globals, lexer)?);
-            }
-
-            let values = values
-                .into_iter()
-                .map(|value| resolve_types_value(value, function, globals, lexer))
-                .collect::<Result<Vec<Value>, String>>()?;
-
-            function.add_instruction(Instruction::Return(values, new_types))
-        }
-        Instruction::If(condition, then_scope, else_scope, phis) => {
-            let mut new_phis = Vec::with_capacity(phis.len());
-            for phi in phis {
-                new_phis.push(resolve_types_phi(phi, function, globals, lexer)?)
-            }
-
-            let instruction = Instruction::If(
-                condition,
-                resolve_types_scope(&then_scope, function, globals, lexer)?,
-                resolve_types_scope(&else_scope, function, globals, lexer)?,
-                new_phis,
-            );
-            function.add_instruction(instruction);
-        }
-        Instruction::Loop(phis, body_scope) => {
-            let mut new_phis = Vec::with_capacity(phis.len());
-            for phi in phis {
-                new_phis.push(resolve_types_phi(phi, function, globals, lexer)?)
-            }
-
-            let instruction = Instruction::Loop(
-                new_phis,
-                resolve_types_scope(&body_scope, function, globals, lexer)?,
-            );
-            function.add_instruction(instruction);
-        }
-        Instruction::While(phis, test_scope, test, body_scope) => {
-            let mut new_phis = Vec::with_capacity(phis.len());
-            for phi in phis {
-                new_phis.push(resolve_types_phi(phi, function, globals, lexer)?)
-            }
-
-            let instruction = Instruction::While(
-                new_phis,
-                resolve_types_scope(&test_scope, function, globals, lexer)?,
-                test,
-                resolve_types_scope(&body_scope, function, globals, lexer)?,
-            );
-            function.add_instruction(instruction);
         }
         other_instruction => function.add_instruction(other_instruction),
     };

@@ -4,7 +4,9 @@ use std::iter::zip;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Ident, Type};
+use syn::{
+    parse_macro_input, Data, DeriveInput, Fields, GenericArgument, Ident, PathArguments, Type,
+};
 
 fn is_value(type_: &Type) -> bool {
     quote!(#type_).to_string() == "Value"
@@ -12,6 +14,48 @@ fn is_value(type_: &Type) -> bool {
 
 fn is_type(type_: &Type) -> bool {
     quote!(#type_).to_string() == "Type"
+}
+
+fn process_vec_element(element_type: &Type) -> Option<proc_macro2::TokenStream> {
+    if let Type::Path(path) = element_type {
+        if let Some(last_segment) = path.path.segments.last() {
+            if last_segment.ident == "Value" {
+                return Option::Some(quote!(resolve_types_value(
+                    element, function, globals, lexer
+                )));
+            } else if last_segment.ident == "Type" {
+                return Option::Some(quote!(resolve_actual_type(&element, globals, lexer)));
+            } else if last_segment.ident == "Phi" {
+                return Option::Some(quote!(resolve_types_phi(element, function, globals, lexer)));
+            }
+        }
+    };
+    Option::None
+}
+
+fn process_field(field_name: &Ident, field_type: &Type) -> proc_macro2::TokenStream {
+    if let Type::Path(path) = field_type {
+        if let Some(last_segment) = path.path.segments.last() {
+            if last_segment.ident == "Value" {
+                return quote!(resolve_types_value(#field_name, function, globals, lexer)?);
+            } else if last_segment.ident == "Type" {
+                return quote!(resolve_actual_type(&#field_name, globals, lexer)?);
+            } else if last_segment.ident == "Scope" {
+                return quote!(resolve_types_scope(&#field_name, function, globals, lexer)?);
+            } else if last_segment.ident == "Vec" {
+                if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                    if args.args.len() == 1 {
+                        if let GenericArgument::Type(arg_type) = &args.args[0] {
+                            if let Some(process_element) = process_vec_element(arg_type) {
+                                return quote!(#field_name.into_iter().map(|element| #process_element).collect::<Result<Vec<_>, String>>()?);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    quote!(#field_name)
 }
 
 #[proc_macro_derive(ResolveTypes)]
@@ -41,13 +85,7 @@ pub fn derive_resolve_types(input: TokenStream) -> TokenStream {
 
                 let processed_fields: Vec<_> = zip(pattern_fields.iter(), fields.unnamed)
                     .map(|(field_name, field)| {
-                        if is_value(&field.ty) {
-                            quote! {resolve_types_value(#field_name, function, globals, lexer)?}
-                        } else if is_type(&field.ty) {
-                            quote! {resolve_actual_type(&#field_name, globals, lexer)?}
-                        } else {
-                            quote! {#field_name}
-                        }
+                        process_field(field_name, &field.ty)
                     })
                     .collect();
 
