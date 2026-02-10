@@ -599,7 +599,6 @@ fn resolve_print(
     type_: Type,
     function: &mut Function,
     globals: &mut Globals,
-    lexer: &Lexer,
 ) -> Result<(), String> {
     match type_.clone() {
         Type::Int => function.add_instruction(Instruction::Printf(
@@ -642,7 +641,6 @@ fn resolve_print(
                     element_type.clone(),
                     function,
                     globals,
-                    lexer,
                 )?;
             }
         }
@@ -662,7 +660,6 @@ fn resolve_print(
                     element_type.deref().clone(),
                     function,
                     globals,
-                    lexer,
                 )?;
             }
         }
@@ -1026,7 +1023,7 @@ fn resolve_types_instruction(
                 result_var,
             ));
         }
-        Instruction::Print(value, type_) => resolve_print(value, type_, function, globals, lexer)?,
+        Instruction::Print(value, type_) => resolve_print(value, type_, function, globals)?,
         Instruction::Printf(fmt_string, args) => {
             function.add_instruction(Instruction::Printf(fmt_string, args))
         }

@@ -8,14 +8,6 @@ use syn::{
     parse_macro_input, Data, DeriveInput, Fields, GenericArgument, Ident, PathArguments, Type,
 };
 
-fn is_value(type_: &Type) -> bool {
-    quote!(#type_).to_string() == "Value"
-}
-
-fn is_type(type_: &Type) -> bool {
-    quote!(#type_).to_string() == "Type"
-}
-
 fn process_vec_element(element_type: &Type) -> Option<proc_macro2::TokenStream> {
     if let Type::Path(path) = element_type {
         if let Some(last_segment) = path.path.segments.last() {
