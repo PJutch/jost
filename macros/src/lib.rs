@@ -42,6 +42,8 @@ fn process_field(field_name: &Ident, field_type: &Type) -> proc_macro2::TokenStr
                 return quote!(resolve_actual_type(&#field_name, globals, lexer)?);
             } else if last_segment.ident == "Scope" {
                 return quote!(resolve_types_scope(&#field_name, function, globals, lexer)?);
+            } else if last_segment.ident == "Fields" {
+                return quote!(resolve_actual_fields(#field_name, globals, lexer)?);
             } else if last_segment.ident == "Vec" {
                 if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
                     if args.args.len() == 1 {

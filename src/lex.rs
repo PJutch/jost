@@ -26,7 +26,7 @@ fn get_byte(s: &str, index: usize) -> Option<u8> {
     s.as_bytes().get(index).copied()
 }
 
-fn parse_token(code: &str, start: i64, end: i64) -> Option<(Word, Location)> {
+fn parse_token<'a>(code: &'a str, start: i64, end: i64) -> Option<(Word<'a>, Location)> {
     let token = &code[(start as usize)..(end as usize)];
     if token.bytes().all(|c| c.is_ascii_whitespace()) {
         Option::None

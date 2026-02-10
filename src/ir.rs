@@ -4,11 +4,13 @@ use crate::lex::Location;
 use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
+use crate::types::resolve_actual_fields;
 use crate::types::resolve_actual_type;
 use crate::types::resolve_types_phi;
 use crate::types::resolve_types_scope;
 use crate::types::resolve_types_value;
 use crate::types::type_of;
+use crate::types::Fields;
 use crate::types::Type;
 
 use jost_macros::ResolveTypes;
@@ -612,9 +614,9 @@ pub enum Instruction {
     GetElementPtr(Type, Value, Value, i64),
     GetNeighbourPtr(Type, Value, Value, i64),
 
-    GetField(Value, Vec<(String, Type)>, Type, String, i64),
-    SetField(Value, Vec<(String, Type)>, Value, Type, String, i64),
-    GetFieldPtr(Value, Vec<(String, Type)>, Type, String, i64),
+    GetField(Value, Fields, Type, String, i64),
+    SetField(Value, Fields, Value, Type, String, i64),
+    GetFieldPtr(Value, Fields, Type, String, i64),
 
     Bitcast(Value, Type, Type, i64),
 

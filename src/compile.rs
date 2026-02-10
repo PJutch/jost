@@ -22,6 +22,7 @@ use crate::ir::Value;
 use crate::types::resolve_type;
 use crate::types::resolve_types_function;
 use crate::types::vec_underlying_type;
+use crate::types::Fields;
 use crate::types::Type;
 
 use std::cmp;
@@ -1449,7 +1450,7 @@ fn compile_field(
                 function.pop(globals);
                 function.pop(globals);
 
-                fields.push((name.to_owned(), field_type));
+                fields.add_field(name.to_owned(), field_type);
                 function.push(Value::Type(Type::Struct(fields)));
                 return Result::Ok(());
             }
@@ -1475,9 +1476,7 @@ fn compile_get_field(
     if let Some(structure) = function.nth_from_top(0, globals) {
         let structure_type = type_of(&structure, function, globals);
         if let Some(fields) = should_be_struct(structure_type, globals) {
-            if let Some((_, type_)) = fields.iter().find(|(name, _)| name == field) {
-                let type_ = type_.clone();
-
+            if let Some(type_) = fields.find_field(field).cloned() {
                 function.pop(globals);
 
                 let result_var = function.new_var(type_.clone());
@@ -1515,8 +1514,7 @@ fn compile_set_field(
     if let Some(structure) = function.nth_from_top(1, globals) {
         let structure_type = type_of(&structure, function, globals);
         if let Some(fields) = should_be_struct(structure_type.clone(), globals) {
-            if let Some((_, type_)) = fields.iter().find(|(name, _)| name == field) {
-                let type_ = type_.clone();
+            if let Some(type_) = fields.find_field(field).cloned() {
                 if let Some(value) = function.nth_from_top(0, globals) {
                     if merge_types(&type_of(&value, function, globals), &type_, globals) {
                         function.pop(globals);
@@ -1900,7 +1898,7 @@ fn compile_block(
             )),
             Word::Id("append") => compile_vec_append(function, globals, lexer, location)?,
             Word::Id("remove_back") => compile_remove_back(function, globals, lexer, location)?,
-            Word::Id("Struct") => function.push(Value::Type(Type::Struct(Vec::new()))),
+            Word::Id("Struct") => function.push(Value::Type(Type::Struct(Fields::new()))),
             Word::Id("field") => compile_field(function, globals, lexer, location)?,
             Word::Id(":") => do_type_assertion(function, globals, lexer, location)?,
             Word::Id(id) => {

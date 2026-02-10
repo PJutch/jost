@@ -35,7 +35,7 @@ pub enum Type {
     Array(Box<Type>, i64),
     Slice(Box<Type>),
     Vec(Box<Type>),
-    Struct(Vec<(String, Type)>),
+    Struct(Fields),
     Typ,
     TypVar(i64),
 }
@@ -161,7 +161,7 @@ impl Type {
             Type::Array(type_, _) => type_.alignment()?,
             Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).alignment()?,
             Type::Vec(type_) => vec_underlying_type(type_.deref().clone()).alignment()?,
-            Type::Struct(members) => struct_underlying_type(members.clone()).alignment()?,
+            Type::Struct(members) => members.clone().struct_underlying_type().alignment()?,
             Type::Typ => {
                 return Result::Err("types don't have a runtime representation".to_owned())
             }
@@ -186,7 +186,7 @@ impl Type {
             Type::Array(type_, size) => type_.byte_size()? * size,
             Type::Slice(type_) => slice_underlying_type(type_.deref().clone()).byte_size()?,
             Type::Vec(type_) => vec_underlying_type(type_.deref().clone()).byte_size()?,
-            Type::Struct(members) => struct_underlying_type(members.clone()).byte_size()?,
+            Type::Struct(members) => members.clone().struct_underlying_type().byte_size()?,
             Type::Typ => {
                 return Result::Err("types don't have a runtime representation".to_owned())
             }
@@ -195,7 +195,40 @@ impl Type {
     }
 }
 
-struct Fields(Vec<(String, Type)>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fields(Vec<(String, Type)>);
+
+impl Fields {
+    pub fn new() -> Self {
+        Fields(Vec::new())
+    }
+
+    pub fn add_field(&mut self, name: String, type_: Type) {
+        self.0.push((name, type_));
+    }
+
+    pub fn find_field(&self, name: &str) -> Option<&Type> {
+        self.0
+            .iter()
+            .find(|(field_name, _)| field_name == name)
+            .map(|(_, type_)| type_)
+    }
+
+    pub fn struct_underlying_type(self) -> Type {
+        Type::Tuple(self.0.into_iter().map(|(_, type_)| type_).collect())
+    }
+
+    fn field_index(&self, field_name: &str) -> Result<i64, String> {
+        Result::Ok(
+            self.0
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| *name == field_name)
+                .ok_or("field not found")?
+                .0 as i64,
+        )
+    }
+}
 
 pub fn slice_underlying_type(element_type: Type) -> Type {
     Type::Tuple(Vec::from([Type::Ref(Box::from(element_type)), Type::Int]))
@@ -207,21 +240,6 @@ pub fn vec_underlying_type(element_type: Type) -> Type {
         Type::Int,
         Type::Int,
     ]))
-}
-
-pub fn struct_underlying_type(members: Vec<(String, Type)>) -> Type {
-    Type::Tuple(members.into_iter().map(|(_, type_)| type_).collect())
-}
-
-fn field_index(fields: Vec<(String, Type)>, field_name: &str) -> Result<i64, String> {
-    Result::Ok(
-        fields
-            .iter()
-            .enumerate()
-            .find(|(_, (name, _))| *name == field_name)
-            .ok_or("field not found")?
-            .0 as i64,
-    )
 }
 
 fn check_can_be_zeroed(
@@ -247,8 +265,8 @@ fn check_can_be_zeroed(
             }
             Result::Ok(())
         }
-        Type::Struct(members) => check_can_be_zeroed(
-            &struct_underlying_type(members.clone()),
+        Type::Struct(fields) => check_can_be_zeroed(
+            &fields.clone().struct_underlying_type(),
             globals,
             lexer,
             location,
@@ -457,11 +475,11 @@ impl DisplayTypesContext {
             ),
             Type::Slice(type_) => format!("{} Slice", self.display_type(type_.as_ref(), globals)),
             Type::Vec(type_) => format!("{} Vec", self.display_type(type_.as_ref(), globals)),
-            Type::Struct(members) => {
+            Type::Struct(fields) => {
                 let mut result = String::from("Struct (");
 
-                let has_members = !members.is_empty();
-                for (name, type_) in members {
+                let has_members = !fields.0.is_empty();
+                for (name, type_) in fields.0 {
                     result += " ";
                     result += &name;
                     result += " ";
@@ -966,16 +984,14 @@ fn resolve_types_instruction(
             ));
         }
         Instruction::GetField(struct_value, fields, field_type, field_name, result_var) => {
-            let fields = resolve_actual_fields(fields, globals, lexer)?;
-
-            let underlying_type = struct_underlying_type(fields.clone());
-            let field_index = field_index(fields, &field_name)?;
+            let underlying_type = fields.clone().struct_underlying_type();
+            let index = fields.field_index(&field_name)?;
 
             function.add_instruction(Instruction::ExtractValue(
                 struct_value,
                 underlying_type,
                 field_type,
-                field_index,
+                index,
                 result_var,
             ));
         }
@@ -987,30 +1003,26 @@ fn resolve_types_instruction(
             field_name,
             result_var,
         ) => {
-            let fields = resolve_actual_fields(fields, globals, lexer)?;
-
-            let underlying_type = struct_underlying_type(fields.clone());
-            let field_index = field_index(fields, &field_name)?;
+            let underlying_type = fields.clone().struct_underlying_type();
+            let index = fields.field_index(&field_name)?;
 
             function.add_instruction(Instruction::InsertValue(
                 struct_value,
                 underlying_type,
                 field_value,
                 field_type,
-                field_index,
+                index,
                 result_var,
             ));
         }
         Instruction::GetFieldPtr(ptr_value, fields, _, field_name, result_var) => {
-            let fields = resolve_actual_fields(fields, globals, lexer)?;
-
-            let underlying_type = struct_underlying_type(fields.clone());
-            let field_index = field_index(fields, &field_name)?;
+            let underlying_type = fields.clone().struct_underlying_type();
+            let index = fields.field_index(&field_name)?;
 
             function.add_instruction(Instruction::GetElementPtr(
                 underlying_type,
                 ptr_value,
-                Value::IntLiteral(field_index),
+                Value::IntLiteral(index),
                 result_var,
             ));
         }
@@ -1062,22 +1074,25 @@ pub fn resolve_actual_type(type_: &Type, globals: &Globals, lexer: &Lexer) -> Re
         Type::TypVar(i) => {
             Result::Err(lexer.make_error_report(globals.type_var_locations[&i], "Ambigous type"))
         }
-        Type::Struct(members) => Result::Ok(struct_underlying_type(members)),
+        Type::Struct(members) => Result::Ok(members.struct_underlying_type()),
         _ => Result::Ok(resolved_type),
     }
 }
 
 pub fn resolve_actual_fields(
-    fields: Vec<(String, Type)>,
+    fields: Fields,
     globals: &Globals,
     lexer: &Lexer,
-) -> Result<Vec<(String, Type)>, String> {
-    fields
-        .into_iter()
-        .map(|(name, field_type)| {
-            Result::Ok((name, resolve_actual_type(&field_type, globals, lexer)?))
-        })
-        .collect()
+) -> Result<Fields, String> {
+    Result::Ok(Fields(
+        fields
+            .0
+            .into_iter()
+            .map(|(name, field_type)| {
+                Result::Ok((name, resolve_actual_type(&field_type, globals, lexer)?))
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    ))
 }
 
 pub fn merge_types(type1: &Type, type2: &Type, globals: &mut Globals) -> bool {
@@ -1168,7 +1183,7 @@ pub fn merge_type_lists(types1: &[Type], types2: &[Type], globals: &mut Globals)
     }
 }
 
-pub fn should_be_struct(type_: Type, globals: &mut Globals) -> Option<Vec<(String, Type)>> {
+pub fn should_be_struct(type_: Type, globals: &mut Globals) -> Option<Fields> {
     match resolve_type(&type_, globals) {
         Type::Struct(fields) => Option::Some(fields),
         _ => Option::None,
