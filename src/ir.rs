@@ -611,7 +611,7 @@ pub enum Instruction {
     InsertValueDyn(Value, Type, Value, Type, Value, i64),
     ExtractValueDyn(Value, Type, Type, Value, i64),
 
-    GetElementPtr(Type, Value, Value, i64),
+    GetElementPtr(Type, Value, Type, Value, i64),
     GetNeighbourPtr(Type, Value, Value, i64),
 
     GetField(Value, Fields, Type, String, i64),

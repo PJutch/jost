@@ -935,6 +935,7 @@ fn resolve_types_instruction(
             function.add_instruction(Instruction::GetElementPtr(
                 viewed_through_type,
                 Value::Variable(ptr_var),
+                Type::Int,
                 index,
                 element_ptr_var,
             ));
@@ -970,6 +971,7 @@ fn resolve_types_instruction(
             function.add_instruction(Instruction::GetElementPtr(
                 viewed_through_type,
                 Value::Variable(ptr_var),
+                Type::Int,
                 index,
                 element_ptr_var,
             ));
@@ -1019,7 +1021,8 @@ fn resolve_types_instruction(
             function.add_instruction(Instruction::GetElementPtr(
                 underlying_type,
                 ptr_value,
-                Value::IntLiteral(index),
+                Type::Int32,
+                Value::Int32Literal(index as i32),
                 result_var,
             ));
         }
@@ -1177,6 +1180,22 @@ pub fn merge_type_lists(types1: &[Type], types2: &[Type], globals: &mut Globals)
         types_match
     } else {
         false
+    }
+}
+
+pub fn should_be_ref(type_: Type, globals: &mut Globals) -> Option<Type> {
+    match resolve_type(&type_, globals) {
+        Type::Ref(element_type) => Option::Some(*element_type),
+        Type::TypVar(type_var) => {
+            let element_var = globals.new_type_var(globals.type_var_locations[&type_var]);
+            merge_types(
+                &Type::TypVar(type_var),
+                &Type::Ref(Box::new(Type::TypVar(element_var))),
+                globals,
+            );
+            Option::Some(Type::TypVar(element_var))
+        }
+        _ => Option::None,
     }
 }
 

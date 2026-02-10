@@ -1,6 +1,7 @@
 use crate::types::display_type;
 use crate::types::display_type_list;
 use crate::types::merge_types;
+use crate::types::should_be_ref;
 use crate::types::should_be_struct;
 use crate::types::slice_underlying_type;
 use crate::types::type_of;
@@ -774,6 +775,7 @@ fn compile_refat(
                         function.add_instruction(Instruction::GetElementPtr(
                             container_type.deref().clone(),
                             container,
+                            Type::Int,
                             Value::IntLiteral(index),
                             result_var,
                         ));
@@ -787,6 +789,7 @@ fn compile_refat(
                         function.add_instruction(Instruction::GetElementPtr(
                             container_type.deref().clone(),
                             container,
+                            Type::Int,
                             index,
                             result_var,
                         ));
@@ -1129,6 +1132,7 @@ fn compile_to_slice(
                 function.add_instruction(Instruction::GetElementPtr(
                     container_type.deref().clone(),
                     ref_container.clone(),
+                    Type::Int,
                     Value::IntLiteral(0),
                     ref_var,
                 ));
@@ -1344,6 +1348,7 @@ fn compile_forref(
                         function.add_instruction(Instruction::GetElementPtr(
                             container_type.deref().clone(),
                             ref_container.clone(),
+                            Type::Int,
                             Value::IntLiteral(i),
                             element_ptr_var,
                         ));
@@ -1548,6 +1553,46 @@ fn compile_set_field(
     ))
 }
 
+fn compile_ref_field(
+    field: &str,
+    function: &mut Function,
+    globals: &mut Globals,
+    lexer: &Lexer,
+    location: Location,
+) -> Result<(), String> {
+    if let Some(structure_ref) = function.nth_from_top(0, globals) {
+        let structure_ref_type = type_of(&structure_ref, function, globals);
+        if let Some(structure_type) = should_be_ref(structure_ref_type, globals) {
+            if let Some(fields) = should_be_struct(structure_type, globals) {
+                if let Some(type_) = fields.find_field(field).cloned() {
+                    function.pop(globals);
+
+                    let result_var = function.new_var(Type::Ref(Box::new(type_.clone())));
+                    function.push(Value::Variable(result_var));
+
+                    function.add_instruction(Instruction::GetFieldPtr(
+                        structure_ref,
+                        fields,
+                        type_,
+                        field.into(),
+                        result_var,
+                    ));
+                    return Result::Ok(());
+                }
+            }
+        }
+    }
+
+    Result::Err(lexer.make_error_report(
+        location,
+        &format!(
+            "expected Struct (... {} A ... ), found {}",
+            field,
+            function.stack_as_string(globals)
+        ),
+    ))
+}
+
 fn compile_block(
     lexer: &mut Lexer,
     function: &mut Function,
@@ -1578,6 +1623,11 @@ fn compile_block(
                 } else {
                     compile_get_field(field, function, globals, lexer, location)?
                 }
+                continue;
+            }
+
+            if let Some(field) = id.strip_prefix("&.") {
+                compile_ref_field(field, function, globals, lexer, location)?;
                 continue;
             }
         }

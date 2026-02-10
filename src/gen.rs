@@ -304,12 +304,13 @@ fn generate_instruction_llvm(
                 context.to_expression(tuple),
             ));
         }
-        Instruction::GetElementPtr(type_, ptr, index, result_var) => {
+        Instruction::GetElementPtr(type_, ptr, index_type, index, result_var) => {
             let result_var_number = context.next_var_number(*result_var);
             context.append(&format!(
-                "    %{result_var_number} = getelementptr {}, ptr {}, i64 0, i64 {}\n",
+                "    %{result_var_number} = getelementptr {}, ptr {}, i64 0, {} {}\n",
                 to_llvm_type(type_),
                 context.to_expression(ptr),
+                to_llvm_type(index_type),
                 context.to_expression(index)
             ));
         }

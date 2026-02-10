@@ -7,5 +7,9 @@ undefined swp :
   "test" .b=
 
 dup .a print
-print
+dup print
+
+alloca
+dup &.a 2 store pop
+load print
 
